@@ -70,6 +70,7 @@ src/
 │   ├── transport.js     传输层：按环境选「同源代理」或「原生直连」
 │   ├── maccms.js        MacCMS 协议：请求、响应解析、vod_play_url 解析
 │   ├── taxonomy.js      分类语义归一（解决各源 type_id 不一致）
+│   ├── rank.js          热度排序与低质降权（各源 hits 填充率差异极大）
 │   └── index.js         业务层：多源聚合、合并去重、缓存、分页策略
 ├── utils/
 │   ├── media.js         数据归一化 + 跨源去重 + 播放地址处理
@@ -151,9 +152,11 @@ npm run build                  # 构建 web 产物
 # 验证（改动涉及数据层后建议跑 verify:all；含 verify:flow，需 dev server 运行中）
 npm run verify:all             # 全部验证
 npm run verify:flow            # 端到端 + 播放硬验证（需 dev server 运行中）
+npm run verify:rank            # 热度排序与低质降权
 npm run verify:storage         # 本地存储逻辑
 npm run verify:config          # 源配置校验
 npm run verify:taxonomy        # 分类翻译准确率
+npm run diagnose:sources       # 诊断各源的数据质量（换源前评估用）
 
 # 部署
 npm run gen:nginx              # 生成生产 nginx 采集源代理配置
@@ -210,6 +213,29 @@ vod_play_url  = "第01集$url#第02集$url$$$第01集$url"
 - 改浏览器版源列表 → 必须重跑 `npm run gen:nginx` 并重载 nginx
 - App 版直连源站，无此限制
 - 也可在 App 内「我的 → 资源源」用远程配置更新，无需重打包
+
+### 5. 热度数据只有部分源提供，排序必须分层
+
+实测各源 `vod_hits` 填充率差异极大：
+
+```
+爱奇艺  40/40  ✅ 最高 8425
+魔都    40/40  ✅ 最高 44029
+量子     0/40  ❌ 全为 0
+非凡     0/40  ❌ 全为 0
+电影天堂  1/40  ❌
+```
+
+`vod_score` 填充率也只有 5~13%，且**接口不支持 `by`/`order`/`sort` 排序参数**
+（加什么都没用，返回同一批数据）。所以热度排序只能客户端做。
+
+**关键约束**：绝对不能因为 hits 为 0 就把某个源整体排到末尾——
+那会让量子/非凡/电影天堂三个主力源被埋掉，既损失可播片源也破坏多源冗余。
+`api/rank.js` 的做法是「各源内部先按自己的信号排序 → 跨源交错取数 →
+剩余按全局热度补齐」，保证每个源都有曝光。
+
+改动排序权重时请同步更新 `scripts/verify-rank.mjs` ——
+里面有一条专门测「hits 为 0 的源不能被整体埋掉」的用例。
 
 ---
 
