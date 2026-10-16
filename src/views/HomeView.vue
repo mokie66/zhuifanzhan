@@ -8,7 +8,7 @@ import { useRouter } from 'vue-router'
 import { ChevronRight, RefreshCw } from 'lucide-vue-next'
 import StateBlock from '@/components/StateBlock.vue'
 import MediaCard from '@/components/MediaCard.vue'
-import HeroCarousel from '@/components/HeroCarousel.vue'
+import PromoCarousel from '@/components/PromoCarousel.vue'
 import { getHomeFeed, checkSourcesHealth } from '@/api/index.js'
 import { useAsync } from '@/composables/useAsync.js'
 import { formatRelativeTime } from '@/utils/format.js'
@@ -49,27 +49,6 @@ const latestAnime = computed(() => feed.data.value?.latestAnime || [])
 const latestMovie = computed(() => feed.data.value?.latestMovie || [])
 const categories = computed(() => feed.data.value?.categories || [])
 
-/**
- * 轮播内容
- * 从三个分区里合并挑出有海报的影片，按评分降序取前 5 条。
- * 不直接用 feed.hero（单条），因为轮播需要多条才有意义。
- */
-const heroItems = computed(() => {
-  const pool = [...latestAnime.value, ...latestTv.value, ...latestMovie.value].filter(
-    (v) => v.poster
-  )
-  const seen = new Set()
-  return pool
-    .filter((v) => {
-      const k = v.title
-      if (seen.has(k)) return false
-      seen.add(k)
-      return true
-    })
-    .sort((a, b) => (b.score || 0) - (a.score || 0))
-    .slice(0, 5)
-})
-
 const okSourceCount = computed(() => sourcesHealth.value.filter((s) => s.ok).length)
 const allSourceCount = computed(() => sourcesHealth.value.length)
 
@@ -88,11 +67,6 @@ function continueWatching(item) {
     },
     query: { line: item.lineKey || '' },
   })
-}
-
-/** 轮播点击：统一进详情页（首集可能不在当前线路，直接进播放器容易选错线路） */
-function onHeroSelect(vod) {
-  openDetail(vod)
 }
 
 function goGroup(group) {
@@ -126,8 +100,8 @@ const CATEGORY_ICONS = {
     />
 
     <template v-else>
-      <!-- 主视觉轮播（竖版海报完整显示 + 模糊背景，自动切换） -->
-      <HeroCarousel v-if="heroItems.length" :items="heroItems" @select="onHeroSelect" />
+      <!-- 主视觉：推广图轮播（图片自带排版，整张显示不裁切） -->
+      <PromoCarousel />
 
       <!-- 继续观看（本地历史） -->
       <section v-if="history.length">
