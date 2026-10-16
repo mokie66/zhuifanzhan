@@ -888,6 +888,8 @@ export async function getHomeFeed({ force = false, onRefresh } = {}) {
 
   homeInflight = buildHomeFeed({ onUpdate: onRefresh })
     .then((feed) => {
+      // 通知启动闪屏：首页数据已就绪
+      markHomeReady()
       // 首页出来后，后台把底部导航「动漫 / 电视剧」两个榜单页的数据备好，
       // 用户点过去就是瞬开。
       // 因为热门榜按「一个分组一份池子」缓存（见 HOT_POOL_SIZE），
@@ -896,6 +898,11 @@ export async function getHomeFeed({ force = false, onRefresh } = {}) {
       // 这里会用完整预算补齐，用户点底部导航时已经是好数据。
       warmTabLists()
       return feed
+    })
+    .catch((err) => {
+      // 失败也要放行闪屏，否则会一直卡在启动图上
+      markHomeReady()
+      throw err
     })
     .finally(() => {
       homeInflight = null
@@ -909,6 +916,55 @@ function warmTabLists() {
     getHotList('anime', { limit: HOT_POOL_SIZE }).catch(() => []),
     getHotList('tv', { limit: HOT_POOL_SIZE }).catch(() => []),
   ]).catch(() => null)
+}
+
+/* ------------------------------------------------------------------ *
+ * 首页就绪信号（供启动闪屏等待）
+ *
+ * 为什么单独做一套而不是让闪屏直接调 getHomeFeed()：
+ *   getHomeFeed 有并发去重（homeInflight）。若启动页先调用，它会成为
+ *   那个「唯一的 Promise」，而它不携带 onRefresh 回调 —— 于是 HomeView
+ *   后续的调用只会复用它，热门榜后台升级的结果就没人接收了。
+ *   所以这里只提供「等待」能力，不参与任何请求的创建。
+ * ------------------------------------------------------------------ */
+
+let homeReadyFlag = false
+const homeReadyWaiters = new Set()
+
+/** 首页数据就绪（或已就绪过）时调用 */
+function markHomeReady() {
+  homeReadyFlag = true
+  const waiters = [...homeReadyWaiters]
+  homeReadyWaiters.clear()
+  waiters.forEach((fn) => fn(true))
+}
+
+/**
+ * 等待首页数据就绪。
+ * 若当前没有请求在进行中（例如还没进首页），立即返回 false，不空等。
+ *
+ * @param {number} timeoutMs 最长等待时间
+ * @returns {Promise<boolean>} 是否在超时前就绪
+ */
+export function waitHomeFeedReady(timeoutMs = 8000) {
+  if (homeReadyFlag) return Promise.resolve(true)
+  if (!homeInflight) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (ok) => {
+      if (done) return
+      done = true
+      homeReadyWaiters.delete(finish)
+      resolve(ok)
+    }
+    homeReadyWaiters.add(finish)
+    setTimeout(() => finish(false), timeoutMs)
+  })
+}
+
+/** 首页数据是否已经就绪过 */
+export function isHomeFeedReady() {
+  return homeReadyFlag
 }
 
 /** 真正做聚合的那一层 */

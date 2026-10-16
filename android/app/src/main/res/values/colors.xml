@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        启动闪屏的背景色。
+        取自闪屏图边缘的实测平均色（顶 #9098B4 / 底 #7282A4），
+        用于和 Web 层闪屏覆盖层无缝衔接 —— 用户点开 App 的一瞬间看到的是
+        这个颜色，随后 WebView 就绪、覆盖层接上完整图片，不会闪白。
+
+        为什么不在这里放整张图：
+          本项目 targetSdk 36，Android 12+ 启用系统闪屏，系统闪屏只支持
+          「背景色 + 居中图标」，无法全屏显示图片；若强行用 android:background
+          铺图，bitmap 会被拉伸填满窗口，9:16 的图在 20:9 的屏上会横向压扁。
+          所以全屏图统一由 Web 层覆盖层负责（见 components/LaunchSplash.vue）。
+    -->
+    <color name="splashBackground">#9098B4</color>
+
+    <!--
+        品牌色。styles.xml 的 AppTheme 一直在引用这三个颜色，
+        但此前项目里并没有定义它们（样式属性的资源引用是惰性解析，
+        AAPT 不报错，运行时取到 0，主题色实际是失效的）。
+        这里补齐，取值与前端 styles/theme.css 的樱花粉保持一致。
+    -->
+    <color name="colorPrimary">#FB7299</color>
+    <color name="colorPrimaryDark">#F1558A</color>
+    <color name="colorAccent">#FB7299</color>
+</resources>

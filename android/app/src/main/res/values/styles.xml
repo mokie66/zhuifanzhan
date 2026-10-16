@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <!-- Base application theme. -->
+    <!-- Base application theme.
+         注意 colorPrimary / colorPrimaryDark / colorAccent 定义在 colors.xml。
+         这三个颜色此前一直被引用但项目里并未定义（样式属性里的资源引用是惰性
+         解析，AAPT 不报错，运行时取到 0，等于主题色是失效的），已一并补齐。 -->
     <style name="AppTheme" parent="Theme.AppCompat.Light.DarkActionBar">
-        <!-- Customize your theme here. -->
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
         <item name="colorAccent">@color/colorAccent</item>
@@ -15,8 +17,21 @@
         <item name="android:background">@null</item>
     </style>
 
+    <!--
+        启动主题：负责「点图标」到「WebView 就绪」之间的一小段时间。
 
+        背景色与 Web 层闪屏覆盖层（components/LaunchSplash.vue）保持一致，
+        衔接时不闪白。
+
+        为什么这里不铺整张闪屏图：
+          本项目 targetSdk 36，Android 12+ 会启用系统闪屏，而系统闪屏只支持
+          「背景色 + 居中图标」，无法全屏展示图片；若仍用 android:background
+          铺图，bitmap 会被拉伸填满窗口，9:16 的图在 20:9 的手机屏上会横向压扁。
+          所以全屏图统一交给 Web 层覆盖层。
+    -->
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
-        <item name="android:background">@drawable/splash</item>
+        <item name="android:background">@color/splashBackground</item>
+        <item name="windowSplashScreenBackground">@color/splashBackground</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
     </style>
 </resources>
