@@ -71,6 +71,8 @@ src/
 │   ├── maccms.js        MacCMS 协议：请求、响应解析、vod_play_url 解析
 │   ├── taxonomy.js      分类语义归一（解决各源 type_id 不一致）
 │   ├── rank.js          热度排序与低质降权（各源 hits 填充率差异极大）
+│   ├── cache.js         两级缓存：内存 + localStorage，支持 stale-while-revalidate
+│   ├── health.js        源健康度与熔断（持久化，重启后即刻生效）
 │   └── index.js         业务层：多源聚合、合并去重、缓存、分页策略
 ├── utils/
 │   ├── media.js         数据归一化 + 跨源去重 + 播放地址处理
@@ -153,10 +155,12 @@ npm run build                  # 构建 web 产物
 npm run verify:all             # 全部验证
 npm run verify:flow            # 端到端 + 播放硬验证（需 dev server 运行中）
 npm run verify:rank            # 热度排序与低质降权
+npm run verify:cache           # 缓存两级/TTL/熔断/瘦身
 npm run verify:storage         # 本地存储逻辑
 npm run verify:config          # 源配置校验
 npm run verify:taxonomy        # 分类翻译准确率
 npm run diagnose:sources       # 诊断各源的数据质量（换源前评估用）
+npm run diagnose:home          # 诊断首页耗时（冷启动 vs 二次启动）
 
 # 部署
 npm run gen:nginx              # 生成生产 nginx 采集源代理配置
@@ -236,6 +240,50 @@ vod_play_url  = "第01集$url#第02集$url$$$第01集$url"
 
 改动排序权重时请同步更新 `scripts/verify-rank.mjs` ——
 里面有一条专门测「hits 为 0 的源不能被整体埋掉」的用例。
+
+### 6. 首屏性能：四道机制缺一不可
+
+首页冷启动原本要 **20 秒**。实测定位到三个叠加原因，修复后：
+
+| | 修复前 | 修复后 |
+| --- | --- | --- |
+| 冷启动（首次安装） | 20090 ms | **7089 ms** |
+| 二次启动（有缓存） | 20090 ms | **19 ms** |
+| 分类表请求数 | 28 次 | **7 次** |
+| 缓存体积 | — | 39 KB |
+
+四道机制都在 `api/index.js` / `api/cache.js` / `api/health.js`：
+
+1. **持久化缓存**（`api/cache.js`）—— 原先只有内存 Map，App 一关就没了。
+   现在两级缓存（内存 + localStorage），并支持 stale-while-revalidate：
+   过期但可用的数据**立刻返回**，同时后台刷新。
+   这是「每次进 App 都要等」的主因，也是收益最大的一环。
+2. **并发去重**（`maccms.js` 的 `getClasses`）—— 首页要拿 3 个分组，
+   三个调用同时发现缓存为空就会各发一次请求。实测每源发 4 次 `ac=list`
+   （应为 1 次），而它恰恰是最慢的接口。现在共享同一个 Promise。
+3. **首屏总预算**（`HOME_BUDGET_MS`）—— 到点就用已有数据渲染，
+   不再等最慢的源。**这是解决木桶效应的关键**：用户不该为第 7 个源买单。
+   超时的任务不取消，继续跑完写缓存，下次就有数据。
+4. **源健康度熔断**（`api/health.js`）—— 连续失败/连续缓慢的源自动跳过，
+   冷却后放行一次试探。**状态持久化**，所以 App 重启后立刻知道哪些源是坏的，
+   不用再花 20 秒重新发现一遍。
+
+**两个容易踩的坑**（都实际踩过）：
+
+- `getNavCategories` 也必须传 `deadline`。它内部同样调 `getClasses`，
+  并发去重会让它复用正在跑的慢请求；漏传 deadline 时
+  `Promise.all` 会一直等到最慢的源，前面 `getLatest` 的预算就白设了。
+- 列表类缓存**必须瘦身**（`media.js` 的 `slimVod`）。合并后的列表项带着
+  `allLines` / `mirrors` / `lines` / `playableLines`，实测占单条体积 **99.4%**
+  （24 条共 1739 KB，其余字段仅约 10 KB）。不瘦身会让 localStorage 记录
+  达到 MB 级，既逼近 5MB 配额又拖慢序列化。
+  详情页（`detail:*`）**不能**瘦身 —— 它正需要那些线路数据。
+
+调参集中在：`index.js` 的 `HOME_BUDGET_MS` / `PER_SOURCE_TIMEOUT`、
+`maccms.js` 的 `CLASS_TIMEOUT`、`transport.js` 的 `REQUEST_TIMEOUT`、
+`health.js` 的 `HEALTH_TUNING`。
+
+改完用 `npm run diagnose:home` 复测（先跑一次冷启动，再跑一次看是否秒开）。
 
 ---
 

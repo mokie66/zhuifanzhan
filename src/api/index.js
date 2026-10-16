@@ -28,60 +28,210 @@ import {
   queryTypeIds,
   matchGroup,
 } from './taxonomy.js'
-import { normalizeVodList, mergeVods, normalizeTitle } from '@/utils/media.js'
+import { normalizeVodList, mergeVods, normalizeTitle, slimVodList } from '@/utils/media.js'
 import { rankVods } from './rank.js'
 
 /* ------------------------------------------------------------------ *
- * 缓存
+ * 缓存（内存 + localStorage 两级，跨 App 启动保留）
+ *
+ * 原先只有一个内存 Map，App 一关就没了，导致每次启动首页必然冷启动。
+ * 现在第二次起可以瞬间用上次的数据渲染，再后台刷新。
+ * 详见 api/cache.js。
  * ------------------------------------------------------------------ */
-const cache = new Map()
+import {
+  readCache,
+  writeCache,
+  clearAll as clearAllCache,
+  clearMemory as clearMemoryCache,
+  cacheStats,
+} from './cache.js'
+import { checkAvailable, recordSuccess, recordFailure, healthSnapshot } from './health.js'
 
+/**
+ * 读缓存：只认「新鲜」的，过期即视为未命中。
+ *
+ * 注意与 cacheGetSoft 的区别：readCache 会把「过期但仍在可用窗口内」
+ * 的数据也返回（带 stale 标记）。对「最新更新」这类语义，过期就必须重取，
+ * 否则会拿着 20 分钟前的列表当成最新。需要 stale-while-revalidate 的地方
+ * （首页整体聚合）改用 cacheGetSoft。
+ */
 function cacheGet(key) {
-  const hit = cache.get(key)
-  if (!hit) return null
-  if (Date.now() > hit.expire) {
-    cache.delete(key)
-    return null
-  }
+  const hit = readCache(key)
+  if (!hit || hit.stale) return null
   return hit.value
 }
 
-function cacheSet(key, value, ttlMs) {
-  cache.set(key, { value, expire: Date.now() + ttlMs })
-  if (cache.size > 200) {
-    const firstKey = cache.keys().next().value
-    cache.delete(firstKey)
-  }
-  return value
+/**
+ * 读缓存（含「过期但可用」信息）
+ * @returns {{value:any, stale:boolean}|null}
+ */
+function cacheGetSoft(key) {
+  return readCache(key)
 }
 
-export function clearCache() {
-  cache.clear()
+function cacheSet(key, value, ttlMs) {
+  return writeCache(key, value, ttlMs)
+}
+
+/**
+ * 写「列表类」缓存：先瘦身再写。
+ *
+ * 列表项带着完整播放线路数据，实测占单条体积 99.4%，
+ * 直接落盘会把 localStorage 撑到 MB 级并显著拖慢序列化。
+ * 详见 media.js 的 slimVod 说明。
+ *
+ * 注意：详情缓存（detail:*）**不能**用这个函数 —— 详情页正需要那些线路数据。
+ */
+function cacheSetList(key, list, ttlMs) {
+  return cacheSet(key, slimVodList(list), ttlMs)
+}
+
+export function clearCache({ keepPersistent = false } = {}) {
+  if (keepPersistent) clearMemoryCache()
+  else clearAllCache()
+}
+
+export function getCacheStats() {
+  return cacheStats()
+}
+
+export function getSourceHealth() {
+  return healthSnapshot()
 }
 
 /* ------------------------------------------------------------------ *
  * 源并发查询
  * ------------------------------------------------------------------ */
 
-const PER_SOURCE_TIMEOUT = 14000
+/**
+ * 单个请求超时
+ *
+ * 原值 14000（14 秒）太宽松：实测最慢的 ac=list 要 20 秒，
+ * 14 秒超时意味着首屏要白等 14 秒才放弃。采集源正常响应在 300ms~6s，
+ * 超过 6 秒的基本可以认为不值得等。
+ */
+const PER_SOURCE_TIMEOUT = 6000
 
-/** 并发跑多个源，返回成功结果与失败明细 */
-async function fanOut(sources, task, { timeout = PER_SOURCE_TIMEOUT } = {}) {
-  const jobs = sources.map((src) => {
+/**
+ * 分类表任务的超时（外层）。
+ *
+ * 要比 maccms.js 里分类表自身的超时（CLASS_TIMEOUT=7000）略长，
+ * 这样先触发的是内层那个超时，错误信息更准确（「分类表超时」而不是「任务超时」）。
+ */
+const CLASS_FETCH_TIMEOUT = 8000
+
+/**
+ * 首屏总预算：超过这个时间就用已有数据渲染，不再等慢源。
+ *
+ * 这是解决「首页要等 20 秒」的关键 —— 用户不该为最慢的那个源买单。
+ * 拿不到的分区会显示为空，后台继续补齐（见 getHomeFeed 的预热逻辑）。
+ */
+const HOME_BUDGET_MS = 7000
+
+/**
+ * 等一组 Promise，但最多等 budgetMs：到点就把已完成的那些交出来。
+ *
+ * 未完成的任务**不取消** —— 让它继续跑完并写入缓存，下次打开就有数据了。
+ * 这是首屏体验的核心取舍：宁可先显示 4 个源的内容，也不要让用户盯着
+ * 转圈等第 7 个源（实测最慢的源要 20 秒）。
+ */
+function settleWithin(promises, budgetMs) {
+  return new Promise((resolve) => {
+    const out = new Array(promises.length).fill(undefined)
+    let settled = 0
+    let finished = false
+    const finish = () => {
+      if (finished) return
+      finished = true
+      resolve(out)
+    }
+    const timer = setTimeout(finish, budgetMs)
+    promises.forEach((p, i) => {
+      Promise.resolve(p)
+        .then((v) => {
+          out[i] = v
+        })
+        .catch(() => {
+          out[i] = undefined
+        })
+        .finally(() => {
+          if (++settled === promises.length) {
+            clearTimeout(timer)
+            finish()
+          }
+        })
+    })
+  })
+}
+
+/**
+ * 并发跑多个源，返回成功结果与失败明细
+ *
+ * 相比原版增加：
+ *   1. 熔断：跳过健康度不佳的源（健康度持久化，App 重启后依然生效）
+ *   2. 健康度记录：成功/失败/慢 都回写，供下次决策
+ *   3. deadline：首屏总预算，到点返回部分结果
+ */
+async function fanOut(
+  sources,
+  task,
+  { timeout = PER_SOURCE_TIMEOUT, skipUnhealthy = true, deadline = 0 } = {}
+) {
+  const usable = []
+  const skipped = []
+  for (const src of sources) {
+    const h = checkAvailable(src.key)
+    if (skipUnhealthy && !h.usable) {
+      skipped.push({ source: src, error: `已熔断（${h.reason}）` })
+    } else {
+      usable.push(src)
+    }
+  }
+  if (skipped.length) {
+    // 便于排查「为什么首页少了几个源」
+    console.info(
+      `[fanOut] 跳过 ${skipped.length} 个不健康源: ${skipped.map((s) => s.source.key).join(', ')}`
+    )
+  }
+
+  const jobs = usable.map((src) => {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), timeout)
+    const t0 = Date.now()
     return task(src, ctrl.signal)
-      .then((value) => ({ ok: true, source: src, value }))
-      .catch((err) => ({ ok: false, source: src, error: err?.message || String(err) }))
+      .then((value) => {
+        recordSuccess(src.key, Date.now() - t0)
+        return { ok: true, source: src, value }
+      })
+      .catch((err) => {
+        recordFailure(src.key)
+        const msg = err?.name === 'AbortError' ? `超时 ${timeout}ms` : err?.message || String(err)
+        return { ok: false, source: src, error: msg }
+      })
       .finally(() => clearTimeout(timer))
   })
-  const settled = await Promise.allSettled(jobs)
-  const results = settled.map((r) =>
-    r.status === 'fulfilled' ? r.value : { ok: false, source: null, error: 'unexpected' }
-  )
+
+  let results
+  if (deadline > 0) {
+    const partial = await settleWithin(jobs, deadline)
+    const pendingCount = partial.filter((r) => r === undefined).length
+    if (pendingCount) {
+      console.info(`[fanOut] 预算 ${deadline}ms 到点，${pendingCount} 个源仍在跑（后台补齐）`)
+    }
+    results = partial.map(
+      (r) => r || { ok: false, source: null, error: '超出首屏预算（后台继续）', pending: true }
+    )
+  } else {
+    const settled = await Promise.allSettled(jobs)
+    results = settled.map((r) =>
+      r.status === 'fulfilled' ? r.value : { ok: false, source: null, error: 'unexpected' }
+    )
+  }
+
   return {
     ok: results.filter((r) => r.ok),
-    failed: results.filter((r) => !r.ok),
+    failed: [...results.filter((r) => !r.ok), ...skipped],
+    skipped: skipped.length,
   }
 }
 
@@ -89,16 +239,23 @@ async function fanOut(sources, task, { timeout = PER_SOURCE_TIMEOUT } = {}) {
  * 导航分类
  * ------------------------------------------------------------------ */
 
-export async function getNavCategories({ force = false } = {}) {
+export async function getNavCategories({ force = false, deadline = 0 } = {}) {
   if (!force) {
     const cached = cacheGet('nav:categories')
     if (cached) return cached
   }
   const sources = enabledSources()
-  const { ok } = await fanOut(sources, async (src) => {
-    const classes = await getClasses(src)
-    return { key: src.key, classes }
-  })
+  // deadline 必须传：分类表是最慢的接口，而且这里的 fanOut 曾漏传 deadline，
+  // 导致首页 Promise.all 一直等到最慢的源（实测 20 秒），
+  // 前面 getLatest 的预算形同虚设。
+  const { ok } = await fanOut(
+    sources,
+    async (src) => {
+      const classes = await getClasses(src)
+      return { key: src.key, classes }
+    },
+    { deadline, timeout: CLASS_FETCH_TIMEOUT }
+  )
   const classMap = {}
   ok.forEach((r) => {
     classMap[r.value.key] = r.value.classes
@@ -181,8 +338,15 @@ async function fetchLatestByGroup(src, group, want, signal, sourceIndex = 0) {
   return { items: unique.slice(0, want), pageCount: 1 }
 }
 
-/** 按语义分组取最新（首页用） */
-export async function getLatest(group, { limit = 12 } = {}) {
+/**
+ * 按语义分组取最新（首页用）
+ *
+ * @param {object} opts
+ *   limit     返回条数
+ *   deadline  总预算（毫秒）。首页传具体值以限制首屏等待；
+ *             列表页不传（用户能接受翻页时多等一会儿，且需要完整结果）
+ */
+export async function getLatest(group, { limit = 12, deadline = 0 } = {}) {
   const key = `latest:${group}:${limit}`
   const cached = cacheGet(key)
   if (cached) return cached
@@ -190,14 +354,17 @@ export async function getLatest(group, { limit = 12 } = {}) {
   const sources = enabledSources()
   // 候选池取大一些：排序需要足够的样本才能把热门内容顶上来。
   // 之前只按「最新」取，热门但上线较早的片子根本没机会出现。
-  const { ok } = await fanOut(sources, (src, signal) =>
-    fetchLatestByGroup(
-      src,
-      group,
-      Math.ceil(limit * 2.5) + 10,
-      signal,
-      sources.findIndex((s) => s.key === src.key)
-    )
+  const { ok } = await fanOut(
+    sources,
+    (src, signal) =>
+      fetchLatestByGroup(
+        src,
+        group,
+        Math.ceil(limit * 2.5) + 10,
+        signal,
+        sources.findIndex((s) => s.key === src.key)
+      ),
+    { deadline }
   )
 
   const all = []
@@ -205,13 +372,18 @@ export async function getLatest(group, { limit = 12 } = {}) {
   const merged = mergeVods(all, sources)
   // 按热度重排（详见 api/rank.js 的说明）
   const ranked = rankVods(merged, { limit })
-  return cacheSet(key, ranked, 3 * 60 * 1000)
+
+  // 只有拿到内容才写缓存：预算到点时可能一个源都没回来，
+  // 此时写空数组会把「没数据」固化 3 分钟，下次打开还是空的。
+  if (!ranked.length) return ranked
+  // 列表项先瘦身：列表视图不需要播放线路数据（占单条体积 99.4%）
+  return cacheSetList(key, ranked, 3 * 60 * 1000)
 }
 
 /** 一次取多个分组的最新（首页用） */
-export async function getLatestMulti(groups, { limit = 8 } = {}) {
+export async function getLatestMulti(groups, { limit = 8, deadline = 0 } = {}) {
   const entries = await Promise.all(
-    groups.map(async (g) => [g, await getLatest(g, { limit }).catch(() => [])])
+    groups.map(async (g) => [g, await getLatest(g, { limit, deadline }).catch(() => [])])
   )
   return Object.fromEntries(entries)
 }
@@ -306,7 +478,8 @@ export async function getCategoryList({ group = 'tv', page = 1, pageSize = 24 } 
       })),
     },
   }
-  return cacheSet(key, result, 3 * 60 * 1000)
+  // 列表项先瘦身（详见 media.js 的 slimVod）
+  return cacheSet(key, { ...result, items: slimVodList(result.items) }, 3 * 60 * 1000)
 }
 
 /* ------------------------------------------------------------------ *
@@ -367,7 +540,8 @@ export async function searchMedia({ keyword, page = 1, group } = {}) {
       mergedCount: merged.length,
     },
   }
-  return cacheSet(key, result, 3 * 60 * 1000)
+  // 列表项先瘦身（详见 media.js 的 slimVod）
+  return cacheSet(key, { ...result, items: slimVodList(result.items) }, 3 * 60 * 1000)
 }
 
 /** 搜索联想 */
@@ -489,14 +663,65 @@ async function enrichWithMirrors(vod) {
  * 首页
  * ------------------------------------------------------------------ */
 
-export async function getHomeFeed() {
-  const key = 'home:feed'
-  const cached = cacheGet(key)
-  if (cached) return cached
+const HOME_TTL = 3 * 60 * 1000
 
+/** 首页聚合进行中的 Promise（并发去重，避免同时发起多份） */
+let homeInflight = null
+/** 后台刷新进行中标记 */
+let homeRefreshing = false
+
+/**
+ * 首页聚合
+ *
+ * 三种路径：
+ *   1. 缓存新鲜        → 直接返回，一个请求都不发（App 内切换页面时走这里）
+ *   2. 缓存过期但可用   → **立即返回旧数据**，同时后台刷新并通过 onRefresh 回调新数据
+ *   3. 无缓存（冷启动）→ 带总预算请求，最多等 HOME_BUDGET_MS
+ *
+ * 路径 2 是解决「每次进 App 都要等好久」的关键：用户看到的是上次的内容，
+ * 秒开；新内容在后台悄悄更新。这就是 stale-while-revalidate。
+ *
+ * @param {object} opts
+ *   force     忽略缓存，强制重取
+ *   onRefresh 后台刷新完成后的回调，参数是新的 feed
+ */
+export async function getHomeFeed({ force = false, onRefresh } = {}) {
+  const key = 'home:feed'
+
+  if (!force) {
+    const hit = cacheGetSoft(key)
+    if (hit && !hit.stale) return hit.value
+
+    if (hit) {
+      // 过期但可用：先给旧数据，后台刷新
+      if (typeof onRefresh === 'function') {
+        refreshHomeInBackground().then((fresh) => {
+          if (fresh) onRefresh(fresh)
+        })
+      } else {
+        refreshHomeInBackground()
+      }
+      return hit.value
+    }
+
+    // 并发去重：已有冷启动请求在跑就复用
+    if (homeInflight) return homeInflight
+  }
+
+  homeInflight = buildHomeFeed().finally(() => {
+    homeInflight = null
+  })
+  return homeInflight
+}
+
+/** 真正做聚合的那一层 */
+async function buildHomeFeed() {
   const [latest, categories] = await Promise.all([
-    getLatestMulti(['tv', 'anime', 'movie'], { limit: 8 }).catch(() => ({})),
-    getNavCategories().catch(() => []),
+    getLatestMulti(['tv', 'anime', 'movie'], {
+      limit: 8,
+      deadline: HOME_BUDGET_MS,
+    }).catch(() => ({})),
+    getNavCategories({ deadline: HOME_BUDGET_MS }).catch(() => []),
   ])
 
   const tv = latest.tv || []
@@ -504,10 +729,40 @@ export async function getHomeFeed() {
   const movie = latest.movie || []
 
   const pool = [...tv, ...movie, ...anime].filter((v) => v.poster)
-  const hero = pool.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0] || pool[0] || null
+  const hero =
+    pool.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0] || pool[0] || null
 
   const feed = { hero, latestTv: tv, latestAnime: anime, latestMovie: movie, categories }
-  return cacheSet(key, feed, 3 * 60 * 1000)
+
+  // 只有拿到内容才写缓存：预算到点时可能一个源都没回来，
+  // 这时写空数据会把「没内容」固化数分钟，下次打开还是空的。
+  const hasContent = tv.length || anime.length || movie.length
+  if (hasContent) {
+    // 三个分区都先瘦身：这四项播放线路数据占体积 99.4%，
+    // 不瘦身会让 localStorage 记录达到 MB 级（实测 1.7MB），
+    // 既逼近配额上限，序列化本身也要几百毫秒。
+    const slim = {
+      ...feed,
+      latestTv: slimVodList(tv),
+      latestAnime: slimVodList(anime),
+      latestMovie: slimVodList(movie),
+      hero: hero ? slimVodList([hero])[0] : null,
+    }
+    cacheSet('home:feed', slim, HOME_TTL)
+  }
+
+  return feed
+}
+
+/** 后台刷新首页（不阻塞调用方） */
+function refreshHomeInBackground() {
+  if (homeRefreshing) return Promise.resolve(null)
+  homeRefreshing = true
+  return buildHomeFeed()
+    .catch(() => null)
+    .finally(() => {
+      homeRefreshing = false
+    })
 }
 
 /** 相关推荐 */

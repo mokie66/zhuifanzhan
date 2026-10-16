@@ -16,7 +16,22 @@ import { getHistory } from '@/utils/storage.js'
 
 const router = useRouter()
 
-const feed = useAsync(() => getHomeFeed(), { initial: null })
+/**
+ * 首页数据
+ *
+ * onRefresh 的作用：当命中「过期但可用」的持久化缓存时，getHomeFeed 会立即
+ * 返回上次的数据（秒开），同时后台刷新；刷新完成后通过这个回调把新数据推上来。
+ * 这样用户既不用盯着白屏等，也不会一直看到旧内容。
+ */
+const feed = useAsync(
+  () =>
+    getHomeFeed({
+      onRefresh: (fresh) => {
+        if (fresh) feed.data.value = fresh
+      },
+    }),
+  { initial: null }
+)
 const history = ref([])
 const sourcesHealth = ref([])
 const showSourcePanel = ref(false)

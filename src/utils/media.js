@@ -98,6 +98,46 @@ export function normalizeVodList(list, source) {
     .filter(Boolean)
 }
 
+/**
+ * 列表项瘦身：去掉只服务详情页的重字段
+ *
+ * 为什么必须做
+ * ------------
+ * 合并后的列表项带着 allLines / mirrors / lines / playableLines，
+ * 实测这四项占单条体积的 99.4%（24 条共 1739 KB，其余字段只有约 10 KB）。
+ * 把这种数据写进 localStorage 有两个后果：
+ *   1. 逼近 5MB 配额，可能直接写失败（缓存就白做了）
+ *   2. 每次 stringify/parse 1.7MB，耗时抵消掉缓存本该带来的收益
+ *
+ * 安全性
+ * ------
+ * 列表视图（首页/分类/搜索）只用到封面、标题、评分、简介、线路数角标；
+ * 真正的线路数据由详情页通过 getDetail() 重新拉取，不依赖列表项。
+ * 所以这里去掉是安全的。
+ *
+ * 采用「去掉已知的重字段」而不是「白名单保留」：前者在新增字段时
+ * 不会因为忘记加白名单而丢数据。
+ */
+const HEAVY_VOD_FIELDS = ['lines', 'playableLines', 'allLines']
+
+export function slimVod(vod) {
+  if (!vod || typeof vod !== 'object') return vod
+  const out = { ...vod }
+  for (const f of HEAVY_VOD_FIELDS) delete out[f]
+  // mirrors 保留轻量摘要：MediaCard / SearchView 用 mirrors.length 显示「N 源」角标
+  if (Array.isArray(vod.mirrors)) {
+    out.mirrors = vod.mirrors.map((m) => ({
+      sourceKey: m.sourceKey,
+      sourceName: m.sourceName,
+    }))
+  }
+  return out
+}
+
+export function slimVodList(list) {
+  return Array.isArray(list) ? list.map(slimVod) : []
+}
+
 /** 片名归一：用于跨源去重比对 */
 export function normalizeTitle(title) {
   return String(title || '')

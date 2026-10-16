@@ -29,14 +29,26 @@
  * 因此解析后必须给每条线路打上 playable 标记，播放时优先选直链线路。
  */
 
-import { request as transportRequest, parseJson, TransportError } from './transport.js'
+import {
+  request as transportRequest,
+  parseJson,
+  TransportError,
+  REQUEST_TIMEOUT,
+} from './transport.js'
 import { enabledSources, getSource, getActiveSources } from './config.js'
 
-/** 单次请求超时（毫秒）。采集源普遍慢，给足余量。 */
-const REQUEST_TIMEOUT = 20000
+/**
+ * 分类表请求的独立超时
+ *
+ * 分类表是最慢的接口（实测最慢 20 秒），而它只是用来把语义分组翻译成
+ * type_id。等超过 7 秒还不如先把这个源跳过 —— 少一个源不影响首页可用性。
+ */
+const CLASS_TIMEOUT = 7000
 
 /** 分类表缓存：源站分类基本不变，缓存可显著减少请求 */
 const classCache = new Map()
+/** 同源分类表请求进行中的 Promise，用于并发去重（见 getClasses 说明） */
+const classInflight = new Map()
 const CLASS_CACHE_TTL = 30 * 60 * 1000
 
 export class MaccmsError extends Error {
@@ -84,24 +96,51 @@ export async function request(source, params, { timeout = REQUEST_TIMEOUT, signa
 }
 
 /**
- * 取分类表（带缓存）
+ * 取分类表（带缓存 + 并发去重）
+ *
+ * 并发去重为什么必要：
+ *   首页要拿 3 个分组（动漫/电视剧/电影），每个分组都会调 getClasses。
+ *   三个调用几乎同时发生，都发现缓存为空 → 都发请求。
+ *   实测每源发了 4 次 ac=list（应为 1 次），28 次请求里有 24 次是浪费的，
+ *   而 ac=list 恰恰是最慢的接口（最慢单次 20 秒）。
+ *   这里让并发调用共享同一个 Promise。
+ *
  * @returns {Promise<Array<{type_id:number, type_pid:number, type_name:string}>>}
  */
 export async function getClasses(source, { force = false } = {}) {
   const src = typeof source === 'string' ? getSource(source) : source
   if (!src) return []
-  const cached = classCache.get(src.key)
-  if (!force && cached && Date.now() - cached.at < CLASS_CACHE_TTL) {
-    return cached.data
+
+  if (!force) {
+    const cached = classCache.get(src.key)
+    if (cached && Date.now() - cached.at < CLASS_CACHE_TTL) {
+      return cached.data
+    }
+    // 并发去重：已有同源请求在跑就直接复用
+    const inflight = classInflight.get(src.key)
+    if (inflight) return inflight
   }
-  const { data } = await request(src, { ac: 'list' })
-  const classes = (data.class || []).map((c) => ({
-    type_id: Number(c.type_id),
-    type_pid: Number(c.type_pid || 0),
-    type_name: String(c.type_name || '').trim(),
-  }))
-  classCache.set(src.key, { at: Date.now(), data: classes })
-  return classes
+
+  const task = (async () => {
+    try {
+      // 这里显式传超时：不传就会用 transport 的默认值（20 秒），
+      // 而分类表请求由多个调用方共享，一个源卡 20 秒会连累整个首屏。
+      const { data } = await request(src, { ac: 'list' }, { timeout: CLASS_TIMEOUT })
+      const classes = (data.class || []).map((c) => ({
+        type_id: Number(c.type_id),
+        type_pid: Number(c.type_pid || 0),
+        type_name: String(c.type_name || '').trim(),
+      }))
+      // 空结果不缓存，保留重试机会（有的源偶发返回空表）
+      if (classes.length) classCache.set(src.key, { at: Date.now(), data: classes })
+      return classes
+    } finally {
+      classInflight.delete(src.key)
+    }
+  })()
+
+  classInflight.set(src.key, task)
+  return task
 }
 
 /**

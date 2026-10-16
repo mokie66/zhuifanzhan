@@ -19,7 +19,14 @@
 import { proxyUrl } from './sources.js'
 
 /** 请求超时（毫秒）。采集源普遍慢，给足余量。 */
-export const REQUEST_TIMEOUT = 20000
+/**
+ * 默认单次请求超时（毫秒）
+ *
+ * 原值 20000 太长：实测最慢的采集源正好卡在 20 秒，意味着首屏要白等 20 秒。
+ * 采集源正常响应在 300ms~6s，12 秒已经足够宽容；
+ * 分类表这类「等不起」的请求另有更短的独立超时（见 maccms.js 的 CLASS_TIMEOUT）。
+ */
+export const REQUEST_TIMEOUT = 12000
 
 /** 是否运行在原生 App（Capacitor）中 */
 export function isNative() {
