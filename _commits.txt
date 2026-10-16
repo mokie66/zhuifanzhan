@@ -1,0 +1,39 @@
+﻿881e493bdb7c75bb9a5e020ce27340a8b28c29a9|ff442feae5946f54cf3da6d1c4c25b0ef75e98ab|c9601eca9caa58676ba1aad481722ab19244f5b9|天上的大猫|12341546+cat-in-the-sky@user.noreply.gitee.com|2026-10-16T12:28:39+08:00|天上的大猫|12341546+cat-in-the-sky@user.noreply.gitee.com|2026-10-16T12:28:39+08:00|修复三个体验问题 + 新增热度排序
+
+1. 顶部被状态栏遮挡（真 bug）
+   根因：index.html 设了 viewport-fit=cover，但代码里没有任何安全区补偿。
+   Capacitor 8 的 SystemBars 在 WebView >= 140 且 viewport-fit=cover 时
+   会走 CSS 模式，把安全区处理交给网页；网页没写，内容就顶到状态栏后面。
+   修复：新增 --safe-top/--safe-bottom 变量（读 Capacitor 注入的
+   --safe-area-inset-*，fallback 到 env()），应用于顶部栏与底部导航，
+   主内容区留白改用 calc() 计算以免遮住最后一行。
+
+2. 首页横幅观感差
+   根因：采集源只提供竖版海报（vod_pic_slide 实测命中率 0/100），
+   原实现把竖版海报用 object-cover 拉满横幅，构图被裁得支离破碎，
+   海报自带的电影节桂冠、水印文字也被截断。
+   修复：新增 HeroCarousel 组件 —— 模糊背景 + 竖版海报按 2:3 完整显示，
+   并做成真正的轮播（自动切换、指示点、滑动切换、页面不可见时暂停）。
+
+3. 动漫未显示在电视剧上方
+   调整首页分区顺序。
+
+4. 新增热度排序 api/rank.js（用户反馈「都是没人看的资源」）
+   数据现实：vod_hits 填充率 爱奇艺 40/40、魔都 40/40、量子 0/40、非凡 0/40；
+   vod_score 仅 5~13%；接口不支持 by/order 排序参数。
+   故采用分层策略：有 hits 按 hits（对数刻度，跨度 2~44029），
+   无 hits 按 score，再退到时效；低质内容（动态漫/AI 短剧）降权而非删除。
+   关键设计：跨源交错取数，保证 hits 恒为 0 的源仍有曝光，
+   不会因排序把三个主力源整体埋掉。
+
+验证：新增 verify-rank（33/33）；全套 153 项检查全部通过。
+文档：README/运维手册同步更新排序说明。
+
+673721bb1efa8260f842daf267c6a773f19fefa7|ccba59230cac69570cd92fbef94df2f254b51cba|881e493bdb7c75bb9a5e020ce27340a8b28c29a9|天上的大猫|12341546+cat-in-the-sky@user.noreply.gitee.com|2026-10-16T12:29:22+08:00|天上的大猫|12341546+cat-in-the-sky@user.noreply.gitee.com|2026-10-16T12:29:22+08:00|文档：补充热度排序的数据现实与约束
+
+- README 目录结构加入 rank.js
+- 新增第 5 条约束：热度数据只有部分源提供（爱奇艺/魔都 40/40，
+  量子/非凡 0/40），且接口不支持排序参数，排序必须分层做，
+  绝不能因 hits 为 0 就把某个源整体排末尾
+- 常用命令加入 verify:rank 与 diagnose:sources
+

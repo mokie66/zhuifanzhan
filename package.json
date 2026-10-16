@@ -18,6 +18,7 @@
     "diagnose:sources": "node scripts/diagnose-sources.mjs",
     "gen:nginx": "node scripts/gen-nginx.mjs",
     "publish:github": "powershell -ExecutionPolicy Bypass -File scripts/publish-github.ps1",
+    "push:api": "node scripts/push-via-api.mjs",
     "cap:add": "cap add android",
     "cap:sync": "npm run build && cap sync android",
     "cap:open": "cap open android",
