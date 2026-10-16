@@ -1,5 +1,9 @@
 <script setup>
-// 全局底部标签栏：首页 / 电视剧 / 动漫 / 我的（设计稿移动端导航契约）
+// 全局底部标签栏：首页 / 电视剧 / 动漫 / 我的
+//
+// 安全区处理：手势导航条会占住屏幕最底部。这里用 .tabbar-safe 给底部加
+// padding-bottom，把图标上移到手势条上方；导航栏背景仍延伸到屏幕底部。
+// 详见 styles/theme.css 中安全区一节的说明。
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { Heart, House, Sparkles, Tv } from 'lucide-vue-next'
@@ -17,8 +21,8 @@ const activeKey = computed(() => route.meta.navKey)
 </script>
 
 <template>
-  <nav class="fixed bottom-0 left-0 right-0 z-40 h-[56px] border-t border-border bg-card">
-    <div class="mx-auto grid h-full w-full max-w-md grid-cols-4">
+  <nav class="tabbar-safe fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-card">
+    <div class="mx-auto grid h-[56px] w-full max-w-md grid-cols-4">
       <router-link
         v-for="item in items"
         :key="item.key"

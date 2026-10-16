@@ -109,3 +109,55 @@ html.light {
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* ============================================================
+   安全区（状态栏 / 挖孔 / 手势条）
+   ============================================================
+   为什么需要：
+     Android 15+（API 35+）强制边到边绘制，应用内容会绘制到状态栏与
+     导航栏后面。本项目 targetSdk 36，因此必须自行处理安全区，
+     否则顶部会被状态栏遮挡、底部会被手势条遮挡。
+
+   变量从哪来：
+     Capacitor 8 的 SystemBars 插件在「CSS 模式」下会注入
+     --safe-area-inset-* 到 documentElement。注意它注入的是 CSS 自定义
+     属性，**不是** env()，所以这里必须用 var() 读取。
+
+     为什么会走 CSS 模式：SystemBars 的判断是
+       WebView 版本 >= 140 && viewport-fit=cover
+     现代手机的 WebView 都满足，于是 Capacitor 不再用原生 padding，
+     而是把安全区交给我们处理 —— 之前页面没写这段 CSS，
+     所以内容顶到状态栏后面（顶部被遮挡的 bug）。
+
+   为什么用 var() 而不是 env()：
+     - CSS 模式  → Capacitor 注入实际像素值，var() 拿到正确值
+     - Native 模式（旧 WebView / 设了 insetsHandling:"native"）
+                 → 不注入，var() 取 fallback 0，而原生已加过 padding
+     两者都不会重复加边距。env() 在 Android WebView 上返回值不稳定，
+     故仅作为二级 fallback（主要服务 iOS Safari）。
+   ============================================================ */
+:root {
+  --safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+  --safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+
+  /* 底部导航栏内容高度（不含安全区），供主内容区留白计算 */
+  --tabbar-h: 56px;
+}
+
+/* --- 安全区工具类 --- */
+.pt-safe {
+  padding-top: var(--safe-top);
+}
+.pb-safe {
+  padding-bottom: var(--safe-bottom);
+}
+/* 顶部栏：内容下沉到状态栏下方，背景仍延伸到顶部（观感更好） */
+.header-safe {
+  padding-top: var(--safe-top);
+}
+/* 底部导航：内容上移到手势条上方 */
+.tabbar-safe {
+  padding-bottom: var(--safe-bottom);
+}

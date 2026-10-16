@@ -9,6 +9,7 @@
 
 import { parsePlayUrl, isDirectPlayable } from '@/api/maccms.js'
 import { isNative } from '@/api/transport.js'
+import { hitsToScore, scoreToScore } from '@/api/rank.js'
 
 /** 去掉 HTML 标签、多余空白 */
 export function stripHtml(s) {
@@ -168,13 +169,16 @@ export function mergeVods(vods, sources = []) {
 function scoreVod(v, weightOf) {
   let s = 0
   s += (weightOf.get(v.sourceKey) || 0) * 10
-  s += v.playableLines.length * 500
+  s += v.playableLines.length * 500 // 可播线路数是第一优先级
   s += Math.min(v.episodeCount, 200) * 2
   if (v.poster) s += 30
   if (v.intro) s += 20
-  if (v.score > 0) s += 15
   if (v.actors) s += 10
-  s += Math.min(v.hits / 1000, 50)
+  // 热度：用对数刻度而非线性。
+  // 实测 hits 跨度 2 ~ 44029，线性会让单条高播放量数据权重过大，
+  // 且多数源 hits 为 0，线性会直接把它们压到最低，不利于多源冗余。
+  s += hitsToScore(v.hits) * 300
+  s += scoreToScore(v.score) * 120
   return s
 }
 

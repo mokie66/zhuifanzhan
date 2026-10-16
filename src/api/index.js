@@ -29,6 +29,7 @@ import {
   matchGroup,
 } from './taxonomy.js'
 import { normalizeVodList, mergeVods, normalizeTitle } from '@/utils/media.js'
+import { rankVods } from './rank.js'
 
 /* ------------------------------------------------------------------ *
  * 缓存
@@ -187,11 +188,13 @@ export async function getLatest(group, { limit = 12 } = {}) {
   if (cached) return cached
 
   const sources = enabledSources()
+  // 候选池取大一些：排序需要足够的样本才能把热门内容顶上来。
+  // 之前只按「最新」取，热门但上线较早的片子根本没机会出现。
   const { ok } = await fanOut(sources, (src, signal) =>
     fetchLatestByGroup(
       src,
       group,
-      Math.ceil(limit / 2) + 6,
+      Math.ceil(limit * 2.5) + 10,
       signal,
       sources.findIndex((s) => s.key === src.key)
     )
@@ -199,8 +202,10 @@ export async function getLatest(group, { limit = 12 } = {}) {
 
   const all = []
   ok.forEach((r) => all.push(...r.value.items))
-  const merged = mergeVods(all, sources).slice(0, limit)
-  return cacheSet(key, merged, 3 * 60 * 1000)
+  const merged = mergeVods(all, sources)
+  // 按热度重排（详见 api/rank.js 的说明）
+  const ranked = rankVods(merged, { limit })
+  return cacheSet(key, ranked, 3 * 60 * 1000)
 }
 
 /** 一次取多个分组的最新（首页用） */
@@ -278,13 +283,16 @@ export async function getCategoryList({ group = 'tv', page = 1, pageSize = 24 } 
   })
 
   const merged = mergeVods(all, sources)
+  // 同一页内按热度重排：让有真实播放量/好评的内容排在前面，
+  // 批量生产的动态漫等低质内容降权后置（不删除，见 api/rank.js）
+  const ranked = rankVods(merged, { limit: Math.max(pageSize, merged.length) })
   const result = {
     group,
     groupLabel: groupLabel(group),
     page,
     pageCount: Math.min(maxPageCount, 500),
     hasMore: ok.length > 0 && page < Math.min(maxPageCount, 500),
-    items: merged,
+    items: ranked,
     sourceStats: {
       total: effective.length,
       ok: ok.length,

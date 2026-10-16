@@ -5,12 +5,13 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ChevronRight, Play, RefreshCw, Star } from 'lucide-vue-next'
+import { ChevronRight, RefreshCw } from 'lucide-vue-next'
 import StateBlock from '@/components/StateBlock.vue'
 import MediaCard from '@/components/MediaCard.vue'
-import { getHomeFeed, guessGroup, checkSourcesHealth } from '@/api/index.js'
+import HeroCarousel from '@/components/HeroCarousel.vue'
+import { getHomeFeed, checkSourcesHealth } from '@/api/index.js'
 import { useAsync } from '@/composables/useAsync.js'
-import { formatStatus, formatMeta, formatRelativeTime } from '@/utils/format.js'
+import { formatRelativeTime } from '@/utils/format.js'
 import { getHistory } from '@/utils/storage.js'
 
 const router = useRouter()
@@ -28,11 +29,31 @@ onMounted(async () => {
     .catch(() => (sourcesHealth.value = []))
 })
 
-const hero = computed(() => feed.data.value?.hero || null)
 const latestTv = computed(() => feed.data.value?.latestTv || [])
 const latestAnime = computed(() => feed.data.value?.latestAnime || [])
 const latestMovie = computed(() => feed.data.value?.latestMovie || [])
 const categories = computed(() => feed.data.value?.categories || [])
+
+/**
+ * 轮播内容
+ * 从三个分区里合并挑出有海报的影片，按评分降序取前 5 条。
+ * 不直接用 feed.hero（单条），因为轮播需要多条才有意义。
+ */
+const heroItems = computed(() => {
+  const pool = [...latestAnime.value, ...latestTv.value, ...latestMovie.value].filter(
+    (v) => v.poster
+  )
+  const seen = new Set()
+  return pool
+    .filter((v) => {
+      const k = v.title
+      if (seen.has(k)) return false
+      seen.add(k)
+      return true
+    })
+    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .slice(0, 5)
+})
 
 const okSourceCount = computed(() => sourcesHealth.value.filter((s) => s.ok).length)
 const allSourceCount = computed(() => sourcesHealth.value.length)
@@ -54,10 +75,9 @@ function continueWatching(item) {
   })
 }
 
-/** 主视觉的播放按钮：进详情页更稳妥（首集可能不在当前线路） */
-function playHero() {
-  if (!hero.value) return
-  openDetail(hero.value)
+/** 轮播点击：统一进详情页（首集可能不在当前线路，直接进播放器容易选错线路） */
+function onHeroSelect(vod) {
+  openDetail(vod)
 }
 
 function goGroup(group) {
@@ -91,48 +111,8 @@ const CATEGORY_ICONS = {
     />
 
     <template v-else>
-      <!-- 主视觉 -->
-      <section v-if="hero">
-        <div class="relative overflow-hidden rounded-lg">
-          <img
-            v-if="hero.poster"
-            :src="hero.poster"
-            :alt="`《${hero.title}》主视觉`"
-            class="h-[190px] w-full object-cover"
-            referrerpolicy="no-referrer"
-          >
-          <div v-else class="h-[190px] w-full bg-gradient-to-br from-muted to-card"></div>
-          <div class="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent"></div>
-          <div class="absolute inset-0 flex flex-col justify-between p-4">
-            <div class="flex items-center gap-2">
-              <span
-                v-if="hero.score > 0"
-                class="inline-flex h-6 items-center gap-1 rounded-full bg-muted px-2.5 text-[11px] font-semibold text-primary"
-              >
-                <Star class="h-3 w-3 fill-current" />{{ hero.score.toFixed(1) }}
-              </span>
-              <span
-                v-if="hero.remarks"
-                class="inline-flex h-6 items-center rounded-full bg-black/45 px-2.5 text-[11px] text-white/90"
-              >{{ hero.remarks }}</span>
-            </div>
-            <div class="flex items-end justify-between gap-3">
-              <div class="min-w-0">
-                <h2 class="truncate text-h2 text-white">{{ hero.title }}</h2>
-                <p class="mt-0.5 truncate text-[11px] text-white/75">{{ formatMeta(hero) }}</p>
-              </div>
-              <button
-                type="button"
-                class="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-md bg-primary px-5 text-primary-foreground transition-transform duration-150 active:scale-[0.97] motion-reduce:transform-none"
-                @click="playHero"
-              >
-                <Play class="h-4 w-4" />
-                <span class="text-[15px] font-medium">查看详情</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
+      <!-- 主视觉轮播（竖版海报完整显示 + 模糊背景，自动切换） -->
+      <HeroCarousel v-if="heroItems.length" :items="heroItems" @select="onHeroSelect" />
 
       <!-- 继续观看（本地历史） -->
       <section v-if="history.length">
@@ -181,6 +161,27 @@ const CATEGORY_ICONS = {
         </div>
       </section>
 
+      <!-- 最近更新 · 动漫（放在电视剧之前） -->
+      <section v-if="latestAnime.length">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-h2 text-foreground">最近更新 · 动漫</h2>
+          <router-link to="/anime" class="flex items-center text-caption text-primary">
+            查看全部<ChevronRight class="h-3.5 w-3.5" />
+          </router-link>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <button
+            v-for="item in latestAnime"
+            :key="`${item.sourceKey}-${item.id}`"
+            type="button"
+            class="block text-left transition-transform active:scale-[0.98]"
+            @click="openDetail(item)"
+          >
+            <MediaCard :vod="item" />
+          </button>
+        </div>
+      </section>
+
       <!-- 最近更新 · 电视剧 -->
       <section v-if="latestTv.length">
         <div class="mb-3 flex items-center justify-between">
@@ -192,27 +193,6 @@ const CATEGORY_ICONS = {
         <div class="grid grid-cols-2 gap-3">
           <button
             v-for="item in latestTv"
-            :key="`${item.sourceKey}-${item.id}`"
-            type="button"
-            class="block text-left transition-transform active:scale-[0.98]"
-            @click="openDetail(item)"
-          >
-            <MediaCard :vod="item" />
-          </button>
-        </div>
-      </section>
-
-      <!-- 最近更新 · 动漫 -->
-      <section v-if="latestAnime.length">
-        <div class="mb-3 flex items-center justify-between">
-          <h2 class="text-h2 text-foreground">最近更新 · 动漫</h2>
-          <router-link to="/anime" class="flex items-center text-caption text-primary">
-            查看全部<ChevronRight class="h-3.5 w-3.5" />
-          </router-link>
-        </div>
-        <div class="grid grid-cols-2 gap-3">
-          <button
-            v-for="item in latestAnime"
             :key="`${item.sourceKey}-${item.id}`"
             type="button"
             class="block text-left transition-transform active:scale-[0.98]"
