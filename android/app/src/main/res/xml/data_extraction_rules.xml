@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 12+ (API 31+) 的数据提取规则（配合 android:dataExtractionRules 使用）
+
+    分两种场景：
+      cloud-backup           云备份（如 Google Drive 自动备份）
+      device-transfer        换机时的设备间迁移
+
+    两种都排除全部域：个人观看痕迹不应离开设备。
+    与 backup_rules.xml 的作用一致，只是不同 API 版本用不同的声明方式。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

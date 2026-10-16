@@ -1,0 +1,102 @@
+# ==========================================================================
+# 根目录 .gitignore
+# ==========================================================================
+
+# ---------- 依赖 ----------
+node_modules/
+.pnpm-store/
+
+# ---------- 构建产物 ----------
+dist/
+dist-ssr/
+*.local
+
+# ---------- 日志 ----------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dev.log
+dev.err.log
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器的原子写入临时目录（Vite 监视器会因此崩溃，见 vite.config.js 的 watch.ignored）
+.*.tmpdir/
+*.tmp
+
+# ---------- 测试 / 覆盖率 ----------
+coverage/
+.nyc_output/
+
+# ==========================================================================
+# Android
+# ==========================================================================
+
+# Gradle
+android/.gradle/
+android/build/
+android/captcha/
+android/local.properties
+android/.cxx/
+
+# 应用构建产物
+android/app/build/
+android/app/release/
+android/captcha/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# ==========================================================================
+# 密钥与凭据（最重要 — 泄露后他人可伪造你的 App 签名）
+# ==========================================================================
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*.crt
+keystore.properties
+android/keystore.properties
+*.pepk
+# 环境变量文件
+.env
+.env.local
+.env.*.local
+.npmrc
+.netrc
+.git-credentials
+
+# ==========================================================================
+# 本地数据（不应提交）
+# ==========================================================================
+maccms.db
+*.db
+*.sqlite
+*.sqlite3
+sources_user.txt
+report.md
+report.csv
+
+# ==========================================================================
+# 允许提交的例外
+# ==========================================================================
+!android/app/src/main/AndroidManifest.xml
+!.env.example

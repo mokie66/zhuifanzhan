@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        allowBackup 关闭的原因：
+          开启时（Android 默认值）可以用 `adb backup` 导出应用数据。
+          本应用的收藏、观看历史、播放进度都存在 WebView 的 localStorage 里，
+          属于个人使用痕迹，不应被导出。
+        fullBackupContent 指到一份排除规则，双重保险（部分 ROM 对 allowBackup 处理不一致）。
+    -->
+    <application
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+    </application>
+
+    <!--
+        Permissions
+        只申请联网权限——本应用是网页播放器，不需要通讯录 / 存储 / 位置 / 相机等任何敏感权限。
+        保持权限清单最小化，用户在安装时看到的权限也最少。
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

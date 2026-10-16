@@ -1,0 +1,111 @@
+/* ============================================================
+   追番影视站 — 品牌样式系统（清爽二次元 / B站轻快氛围）
+   单一品牌主色：樱花粉（Bilibili 系），明亮底色，圆润轻快
+   由设计稿 colors_and_type.css 迁移
+   ============================================================ */
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--pv-background);
+  --color-foreground: var(--pv-foreground);
+  --color-card: var(--pv-card);
+  --color-card-foreground: var(--pv-card-foreground);
+  --color-popover: var(--pv-popover);
+  --color-popover-foreground: var(--pv-popover-foreground);
+  --color-primary: var(--pv-primary);
+  --color-primary-foreground: var(--pv-primary-foreground);
+  --color-muted: var(--pv-muted);
+  --color-muted-foreground: var(--pv-muted-foreground);
+  --color-border: var(--pv-border);
+  --color-input: var(--pv-input);
+  --color-ring: var(--pv-ring);
+  --radius-sm: var(--pv-radius-sm);
+  --radius-md: var(--pv-radius-md);
+  --radius-lg: var(--pv-radius-lg);
+  --font-sans: var(--pv-font-sans);
+}
+
+:root,
+html.light {
+  /* --- 中性表面 --- */
+  --pv-background: #f7f8fa;          /* 页面底色 */
+  --pv-foreground: #181c24;          /* 主文字 */
+  --pv-card: #ffffff;                /* 卡片表面 */
+  --pv-card-foreground: #181c24;
+  --pv-popover: #ffffff;             /* 弹层表面 */
+  --pv-popover-foreground: #181c24;
+  --pv-muted: #f1f2f5;               /* 次级表面 / hover 底 */
+  --pv-muted-foreground: #5c6470;    /* 次级文字 */
+  --pv-ink-3: #9aa3af;               /* 三级文字 / 占位 */
+  --pv-border: #e7e9ee;              /* 分隔线 / 描边 */
+  --pv-input: #e7e9ee;
+  --pv-ring: #fb7299;                /* 焦点环 = 主色 */
+
+  /* --- 品牌主色（唯一主色：樱花粉） --- */
+  --pv-primary: #fb7299;
+  --pv-primary-foreground: #ffffff;
+  --pv-primary-strong: #f1558a;      /* 主色 hover / 强调步骤 */
+  --pv-primary-soft: #ffedf3;        /* 主色 8% 淡底（标签 / 选中底） */
+  --pv-primary-soft-2: #ffdde9;      /* 主色淡底加深一档 */
+
+  /* --- 语义状态色（仅用于真实状态，不作身份/分类色） --- */
+  --state-success: #3fb374;
+  --state-warning: #e8a33d;
+  --state-error: #e5484d;
+  --state-info: #4c8dff;
+
+  /* --- 圆角（克制刻度，上限 16px） --- */
+  --pv-radius-sm: 4px;
+  --pv-radius-md: 8px;
+  --pv-radius-lg: 16px;
+  --pv-radius-full: 9999px;
+
+  /* --- 阴影（静态表面 alpha ≤ 0.05；深阴影仅限浮层） --- */
+  --pv-shadow-1: 0 1px 2px rgba(24, 28, 36, 0.04), 0 1px 1px rgba(24, 28, 36, 0.03);
+  --pv-shadow-2: 0 8px 24px -8px rgba(24, 28, 36, 0.18);   /* popover / dropdown */
+  --pv-shadow-3: 0 24px 60px -20px rgba(24, 28, 36, 0.30); /* modal / drawer */
+
+  /* --- 字体 --- */
+  --pv-font-sans: "HarmonyOS Sans SC", "MiSans", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  /* --- 8pt 间距 --- */
+  --pv-s-1: 4px;
+  --pv-s-2: 8px;
+  --pv-s-3: 12px;
+  --pv-s-4: 16px;
+  --pv-s-5: 24px;
+  --pv-s-6: 32px;
+  --pv-s-8: 80px;
+}
+
+/* --- 字号刻度工具类（每屏 ≤ 4 档） --- */
+.text-h2 {
+  font-size: 20px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+.text-caption {
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+/* --- 数字排版（评分 / 集数 / 进度） --- */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- 海报卡片通用比例（2:3 竖版） --- */
+.poster-ratio {
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+}
+
+/* --- 横滑条隐藏滚动条 --- */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

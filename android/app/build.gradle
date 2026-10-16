@@ -1,0 +1,106 @@
+apply plugin: 'com.android.application'
+
+// ---------------------------------------------------------------------------
+// 发布签名配置
+// ---------------------------------------------------------------------------
+// 从 android/keystore.properties 读取（该文件与 *.jks 均已被 .gitignore 忽略）。
+// 文件不存在时静默跳过，保证 clone 下来的人仍能跑 assembleDebug。
+//
+// 生成签名：powershell -File scripts\gen-keystore.ps1
+// ---------------------------------------------------------------------------
+def keystorePropsFile = rootProject.file("keystore.properties")
+def hasReleaseSigning = keystorePropsFile.exists()
+def keystoreProps = new Properties()
+if (hasReleaseSigning) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
+android {
+    namespace = "com.zhuifan.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.zhuifan.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            // debug 包默认 application-debuggable=true，任何能接触设备的人都可用 adb 调试。
+            // 自用无妨，但若分发请务必用 release。
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // 未配置签名时不挂 signingConfig，由 gradle 产出未签名包并给出提示
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+// 构建 release 时若未配置签名，明确告知，避免误以为出了可用包
+if (!hasReleaseSigning) {
+    tasks.configureEach { task ->
+        if (task.name == 'assembleRelease') {
+            task.doFirst {
+                logger.warn("""
+                ============================================================
+                未找到 android/keystore.properties，release 包将不会被签名。
+                生成的 APK 无法安装。请先执行：
+                    powershell -ExecutionPolicy Bypass -File scripts\\gen-keystore.ps1
+                ============================================================
+                """.stripIndent())
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
