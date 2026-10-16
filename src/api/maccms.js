@@ -123,8 +123,15 @@ export async function getClasses(source, { force = false } = {}) {
     const inflight = classInflight.get(src.key)
     if (inflight) return inflight
     // 内存没有 → 查落盘（跨 App 启动保留）
+    //
+    // 这里**允许用已过期的**（readCache 会给出 stale 标记）：
+    // 分类表几乎不变，而有些源的分类表接口极不稳定 ——
+    // 实测魔都的 ac=list 会超时（>25 秒），但它的数据接口是正常的。
+    // 若只用 30 分钟内的新鲜数据，一旦过期就只能干等那个超时的接口，
+    // 结果是整个热门榜拿不到数据。
+    // readCache 仍会把「太旧」（超过 ttl×8 = 4 小时）的丢弃，不会用到远古数据。
     const stored = readCache(persistKey)
-    if (stored && !stored.stale && Array.isArray(stored.value) && stored.value.length) {
+    if (stored && Array.isArray(stored.value) && stored.value.length) {
       classCache.set(src.key, { at: Date.now(), data: stored.value })
       return stored.value
     }

@@ -67,7 +67,6 @@ async function toggleSourcePanel() {
 const hotAnime = computed(() => feed.data.value?.hotAnime || [])
 const hotTv = computed(() => feed.data.value?.hotTv || [])
 const latestMovie = computed(() => feed.data.value?.latestMovie || [])
-const categories = computed(() => feed.data.value?.categories || [])
 
 const okSourceCount = computed(() => sourcesHealth.value.filter((s) => s.ok).length)
 const allSourceCount = computed(() => sourcesHealth.value.length)
@@ -87,21 +86,6 @@ function continueWatching(item) {
     },
     query: { line: item.lineKey || '' },
   })
-}
-
-function goGroup(group) {
-  router.push({ name: 'browse', params: { group } })
-}
-
-/** 分类入口：常见分类直连路由，其余走通用 browse */
-const CATEGORY_ICONS = {
-  movie: '🎬',
-  tv: '📺',
-  anime: '✨',
-  variety: '🎤',
-  short: '⚡',
-  doc: '📖',
-  sports: '⚽',
 }
 </script>
 
@@ -233,23 +217,6 @@ const CATEGORY_ICONS = {
         </div>
       </section>
 
-      <!-- 分类快捷入口（来自各源分类表归并结果） -->
-      <section v-if="categories.length">
-        <h2 class="mb-3 text-h2 text-foreground">分类</h2>
-        <div class="grid grid-cols-4 gap-3">
-          <button
-            v-for="cat in categories"
-            :key="cat.key"
-            type="button"
-            class="mx-auto flex h-16 w-16 flex-col items-center justify-center gap-1 rounded-full border border-border bg-card text-muted-foreground transition-transform duration-150 active:scale-[0.97] motion-reduce:transform-none"
-            @click="goGroup(cat.key)"
-          >
-            <span class="text-[18px] leading-none">{{ CATEGORY_ICONS[cat.key] || '🎞' }}</span>
-            <span class="text-[11px] leading-none">{{ cat.label }}</span>
-          </button>
-        </div>
-      </section>
-
       <!-- 源状态（透明化聚合情况） -->
       <section class="rounded-lg border border-border bg-card p-3">
         <button
@@ -294,12 +261,5 @@ const CATEGORY_ICONS = {
         <span>{{ feed.loading.value ? '刷新中…' : '刷新' }}</span>
       </button>
     </template>
-
-    <footer class="pt-2 text-center">
-      <p class="text-[11px] text-muted-foreground">追番站 · 多源聚合</p>
-      <p class="mt-1 text-[11px] text-muted-foreground">
-        内容来自第三方采集接口 · 仅供学习交流 · 版权归原权利人所有
-      </p>
-    </footer>
   </div>
 </template>

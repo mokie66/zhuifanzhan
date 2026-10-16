@@ -19,8 +19,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import StateBlock from '@/components/StateBlock.vue'
-import MediaCard from '@/components/MediaCard.vue'
-import { getDetail, getRecommendations, guessGroup } from '@/api/index.js'
+import { getDetail } from '@/api/index.js'
 import { useAsync } from '@/composables/useAsync.js'
 import { formatStatus, formatMeta, formatScore } from '@/utils/format.js'
 import { isFavorite, toggleFavorite } from '@/utils/storage.js'
@@ -36,7 +35,6 @@ const detail = useAsync(
   { watchSource: [sourceKey, vodId] }
 )
 
-const recs = ref([])
 const faved = ref(false)
 const showSourceSheet = ref(false)
 /** 当前选中的线路 key，默认取第一条可播线路 */
@@ -48,9 +46,6 @@ watch(detail.data, async (vod) => {
   const playable = (vod.allLines || []).find((l) => l.playable)
   activeLineKey.value = playable?.key || vod.allLines?.[0]?.key || ''
   faved.value = await isFavorite(vod)
-  getRecommendations(vod, { limit: 6 })
-    .then((r) => (recs.value = r))
-    .catch(() => (recs.value = []))
 })
 
 const vod = computed(() => detail.data.value)
@@ -85,10 +80,6 @@ function playEpisode(index) {
 async function onToggleFav() {
   if (!vod.value) return
   faved.value = await toggleFavorite(vod.value)
-}
-
-function openVod(v) {
-  router.push({ name: 'detail', params: { sourceKey: v.sourceKey, id: v.id } })
 }
 </script>
 
@@ -250,22 +241,6 @@ function openVod(v) {
       <section v-else class="mt-5 px-4">
         <div class="rounded-md border border-border bg-card p-3 text-caption text-muted-foreground">
           该源未提供可用播放线路
-        </div>
-      </section>
-
-      <!-- 相关推荐 -->
-      <section v-if="recs.length" class="mt-6 px-4">
-        <h2 class="text-[15px] font-medium text-foreground">相关推荐</h2>
-        <div class="mt-3 grid grid-cols-2 gap-3">
-          <button
-            v-for="r in recs"
-            :key="`${r.sourceKey}-${r.id}`"
-            type="button"
-            class="block text-left transition-transform active:scale-[0.98]"
-            @click="openVod(r)"
-          >
-            <MediaCard :vod="r" :show-score="false" />
-          </button>
         </div>
       </section>
     </template>

@@ -43,6 +43,7 @@ const PERSIST_KEYS = [
   'hot:',
   'latest:',
   'classes:',
+  'subcat:',
 ]
 
 const memory = new Map()

@@ -248,6 +248,94 @@ export function rankHot(vods, { limit = 12, now = Date.now() } = {}) {
   return out.slice(0, limit)
 }
 
+/* ------------------------------------------------------------------ *
+ * 搜索结果相关性排序
+ * ------------------------------------------------------------------ */
+
+/** 归一化：去掉空格与常见分隔符，便于做「连续子串」判断 */
+function normForMatch(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[\s\u3000]+/g, '')
+}
+
+/**
+ * 匹配强度分层
+ *
+ * 为什么必须分层而不是简单「包含即算匹配」：
+ *   搜「仙逆」时，
+ *     《短剧仙逆》《凡人仙逆传》  标题里真的连着出现「仙逆」→ 强匹配
+ *     《九尾猫·仙逆》            也连着出现                  → 强匹配
+ *     《逆仙而上》               两个字都在，但顺序反了      → 弱匹配
+ *     《剑仙归来…剑仙逆世重修…》  两个字分散在不同词里        → 弱匹配
+ *   采集源返回的顺序是各源结果拼接的，完全没考虑这个差别，
+ *   于是「逆仙而上」会排在「凡人仙逆传」前面，用户会觉得搜得不准。
+ *
+ * 分层（数值越大越强）：
+ *   4 标题与关键词完全一致
+ *   3 标题以关键词开头
+ *   2 标题包含关键词（连续子串）
+ *   1 关键词的字都出现但被打散
+ *   0 只出现部分字
+ */
+export function matchTier(title, keyword) {
+  const t = normForMatch(title)
+  const k = normForMatch(keyword)
+  if (!t || !k) return { tier: 0, sub: 0 }
+
+  if (t === k) return { tier: 4, sub: 0 }
+
+  const idx = t.indexOf(k)
+  if (idx === 0) {
+    // 前缀匹配：标题越短，说明关键词占的比重越大，越相关
+    return { tier: 3, sub: Math.max(0, 400 - t.length * 2) }
+  }
+  if (idx > 0) {
+    // 包含：出现位置越靠前、标题越短越相关
+    return { tier: 2, sub: Math.max(0, 400 - idx * 6 - t.length * 2) }
+  }
+
+  // 连续子串都没有 → 看字的覆盖度
+  const chars = [...new Set(k)]
+  const hit = chars.filter((c) => t.includes(c)).length
+  const ratio = hit / chars.length
+  if (ratio >= 1) return { tier: 1, sub: Math.max(0, 200 - t.length) }
+  return { tier: 0, sub: Math.round(ratio * 200) }
+}
+
+/**
+ * 搜索结果排序：强匹配优先，弱匹配靠后
+ *
+ * 同层内用热度做次级排序（都不相关时，热门的至少更可能有价值）。
+ * 相关性权重远高于热度 —— 热度高的不相关结果排在前面才是真的搜不准。
+ *
+ * @param {Array} list 已合并去重的影片
+ * @param {string} keyword 用户输入
+ */
+export function rankSearchResults(list, keyword, { now = Date.now() } = {}) {
+  if (!Array.isArray(list) || !list.length) return list || []
+  const kw = String(keyword || '').trim()
+  if (!kw) return list
+
+  const scored = list.map((v, i) => {
+    const { tier, sub } = matchTier(v.title, kw)
+    return { v, tier, sub, hot: popularityScore(v, now), i }
+  })
+
+  scored.sort((a, b) => {
+    // 1. 匹配层级（决定性）
+    if (b.tier !== a.tier) return b.tier - a.tier
+    // 2. 层内位置/长度差异
+    if (b.sub !== a.sub) return b.sub - a.sub
+    // 3. 热度
+    if (Math.abs(b.hot - a.hot) > 1e-9) return b.hot - a.hot
+    // 4. 保持原有顺序，避免排序不稳定导致的抖动
+    return a.i - b.i
+  })
+
+  return scored.map((x) => x.v)
+}
+
 /**
  * 打分：用于跨源合并时挑主记录
  *

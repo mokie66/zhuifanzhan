@@ -178,6 +178,80 @@ console.log('='.repeat(84))
 }
 
 console.log('\n' + '='.repeat(84))
+console.log('7. 搜索结果匹配分级')
+console.log('='.repeat(84))
+{
+  const T = (title, kw) => R.matchTier(title, kw).tier
+
+  // 用户实际遇到的问题：搜「仙逆」时「逆仙而上」排在「凡人仙逆传」前面
+  log(T('短剧仙逆', '仙逆') === 2, '标题包含关键词 → 2 级', '《短剧仙逆》')
+  log(T('凡人仙逆传第6季', '仙逆') === 2, '包含（关键词在中间）→ 2 级', '《凡人仙逆传第6季》')
+  log(T('九尾猫·仙逆', '仙逆') === 2, '包含（带分隔符）→ 2 级', '《九尾猫·仙逆》')
+  log(T('仙逆', '仙逆') === 4, '完全一致 → 4 级')
+  log(T('仙逆之逆天而行', '仙逆') === 3, '以关键词开头 → 3 级')
+  log(
+    T('逆仙而上', '仙逆') === 1,
+    '字都在但顺序反了 → 1 级（弱匹配）',
+    '《逆仙而上》'
+  )
+  log(
+    T('剑仙的逆袭', '仙逆') === 1,
+    '两字分散在不同词里 → 1 级（弱匹配）',
+    '《剑仙的逆袭》'
+  )
+  // 注意《剑仙归来：谁让这剑仙逆世重修的？》里「剑仙逆世」是连续包含「仙逆」的，
+  // 所以它是 2 级强匹配 —— 这不是误判，标题确实连着出现了关键词。
+  log(
+    T('剑仙归来：谁让这剑仙逆世重修的？第五季', '仙逆') === 2,
+    '「剑仙逆世」连续包含关键词 → 2 级（正确判定，非误判）'
+  )
+  log(T('完全不相关', '仙逆') === 0, '只有部分字命中 → 0 级')
+  log(T('', '仙逆') === 0 && T('仙逆', '') === 0, '空值安全')
+  log(T('  仙  逆  ', '仙逆') === 4, '忽略空白后判定为完全一致')
+}
+
+console.log('\n' + '='.repeat(84))
+console.log('8. 搜索结果排序（用截图里的真实数据）')
+console.log('='.repeat(84))
+{
+  const list = [
+    { title: '剑仙归来：谁让这剑仙逆世重修的？第五季', hits: 90000 },
+    { title: '不二女配，逆转仙途', hits: 80000 },
+    { title: '凡人是仙逆传第6季', hits: 100 },
+    { title: '逆仙而上', hits: 70000 },
+    { title: '九尾猫·仙逆', hits: 200 },
+    { title: '短剧仙逆', hits: 50 },
+  ]
+  const sorted = R.rankSearchResults(list, '仙逆')
+  console.log('   排序结果:')
+  sorted.forEach((v, i) => {
+    console.log(
+      `     ${i + 1}. [${R.matchTier(v.title, '仙逆').tier} 级] 《${v.title}》 hits=${v.hits}`
+    )
+  })
+
+  const tiers = sorted.map((v) => R.matchTier(v.title, '仙逆').tier)
+  log(
+    tiers.every((t, i) => i === 0 || t <= tiers[i - 1]),
+    '整体按匹配层级降序（强匹配在前）'
+  )
+  log(
+    tiers[0] === 2 && tiers[tiers.length - 1] === 1,
+    '强匹配（2 级）与弱匹配（1 级）分开'
+  )
+  // 关键回归：热度高但匹配弱的不能靠热度挤到前面
+  const weakHigh = sorted.findIndex((v) => v.title === '逆仙而上')
+  const strongLow = sorted.findIndex((v) => v.title === '短剧仙逆')
+  log(
+    strongLow < weakHigh,
+    '弱匹配即便热度高（70000）也排在强匹配（50）之后',
+    `短剧仙逆@${strongLow} < 逆仙而上@${weakHigh}`
+  )
+  log(R.rankSearchResults([], '仙逆').length === 0, '空列表安全')
+  log(R.rankSearchResults(list, '').length === 6, '空关键词时原样返回')
+}
+
+console.log('\n' + '='.repeat(84))
 console.log(`结果：通过 ${pass}  失败 ${fail}`)
 console.log('='.repeat(84))
 process.exit(fail > 0 ? 1 : 0)

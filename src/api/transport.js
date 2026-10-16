@@ -82,7 +82,21 @@ export class TransportError extends Error {
 }
 
 /**
- * 发起一次采集请求，自动选择传输方式
+ * 可重试的 HTTP 状态码
+ *
+ * 实测爱奇艺的数据接口会间歇性返回 503（5 次里 2 次），
+ * 而且是**快速失败**（335ms 就返回，不是超时）。
+ * 这种瞬时故障重试一两次就能过，成本极低；
+ * 不重试的话，热门榜会因为拿不到爱奇艺的数据而退化成「批量新番」。
+ */
+const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
+/** 最多重试次数（不含首次） */
+const MAX_RETRY = 2
+/** 退避基数（毫秒），第 n 次重试等待 RETRY_BASE_MS * n */
+const RETRY_BASE_MS = 280
+
+/**
+ * 发起一次采集请求，自动选择传输方式，并对瞬时故障重试
  *
  * @param {object} source 采集源对象（来自 sources.js）
  * @param {object} query  协议参数，如 { ac:'detail', pg:1 }
@@ -90,6 +104,27 @@ export class TransportError extends Error {
  * @returns {Promise<{ text:string, status:number, upstreamMs:number, via:string }>}
  */
 export async function request(source, query, opts = {}) {
+  const { signal } = opts
+  let lastErr = null
+
+  for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
+    if (signal?.aborted) break
+    try {
+      return await requestOnce(source, query, opts)
+    } catch (err) {
+      lastErr = err
+      // 只重试「明确的瞬时故障」；网络错误/超时不重试，避免把预算耗在死源上
+      const retryable = err instanceof TransportError && RETRYABLE_STATUS.has(err.status)
+      if (!retryable || attempt === MAX_RETRY) break
+      await new Promise((r) => setTimeout(r, RETRY_BASE_MS * (attempt + 1)))
+    }
+  }
+
+  throw lastErr || new TransportError('请求失败', { source: source?.key })
+}
+
+/** 单次请求（不做重试） */
+async function requestOnce(source, query, opts = {}) {
   const { timeout = REQUEST_TIMEOUT, signal } = opts
   const qs = toQueryString(query)
 

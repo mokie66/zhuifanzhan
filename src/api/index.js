@@ -29,7 +29,7 @@ import {
   matchGroup,
 } from './taxonomy.js'
 import { normalizeVodList, mergeVods, normalizeTitle, slimVodList } from '@/utils/media.js'
-import { rankVods, rankHot } from './rank.js'
+import { rankVods, rankHot, rankSearchResults } from './rank.js'
 
 /* ------------------------------------------------------------------ *
  * 缓存（内存 + localStorage 两级，跨 App 启动保留）
@@ -133,9 +133,15 @@ const CLASS_FETCH_TIMEOUT = 8000
  * 首屏总预算：超过这个时间就用已有数据渲染，不再等慢源。
  *
  * 这是解决「首页要等 20 秒」的关键 —— 用户不该为最慢的那个源买单。
- * 拿不到的分区会显示为空，后台继续补齐（见 getHomeFeed 的预热逻辑）。
+ *
+ * 为什么是 9 秒而不是更短：热门榜依赖爱奇艺/魔都，实测这两个源
+ * 「分类表 + 数据」合计要 6.5 秒（爱奇艺 0.9+5.6；魔都 3.4+2.8）。
+ * 用 7 秒会时灵时不灵 —— 拿不到播放量数据就退化成「刚入库的批量新番」，
+ * 也就是用户反复反馈的内容质量问题。
+ * 这 9 秒只在**首次安装后的第一次打开**付出，之后有持久化缓存是瞬开，
+ * 所以宁可多等 2 秒也要保证内容是对的。
  */
-const HOME_BUDGET_MS = 7000
+const HOME_BUDGET_MS = 9000
 
 /**
  * 等一组 Promise，但最多等 budgetMs：到点就把已完成的那些交出来。
@@ -372,6 +378,63 @@ function isWeakHotList(list) {
 }
 
 /**
+ * 记住「每个源在每个分组下选中的子分类 id」的缓存时长
+ * 24 小时足够：子分类 id 基本不变，而这是分类表不可用时的唯一兜底。
+ */
+const SUBCAT_MEMO_TTL = 24 * 60 * 60 * 1000
+
+/**
+ * 解析某个源在某个分组下应该查哪些子分类
+ *
+ * 为什么要有「记住」这一层：
+ *   部分源的分类表接口极不稳定 —— 实测魔都的 ac=list 直接超时（>25 秒），
+ *   但它的数据接口完全正常（2.4 秒返回 20 条且都带播放量）。
+ *   如果没有兜底，魔都就会因为「拿不到分类表」而整个被跳过，
+ *   而它恰恰是热门榜最重要的数据源之一。
+ *   所以每次成功解析后把结果记下来，失败时直接用上次记住的 id。
+ *
+ * @returns {Promise<number[]|null>} 子分类 id 列表；彻底无法确定时返回 null
+ */
+async function resolveHotPicks(src, group, preferRe) {
+  const memoKey = `subcat:${group}:${src.key}`
+  try {
+    const classes = await getClasses(src)
+    const groups = resolveGroups(classes)
+    const g = groups[group]
+    if (!g) return null
+
+    const children = [...new Set(g.children || [])].map((id) => {
+      const c = classes.find((x) => x.type_id === id)
+      return { id, name: c ? c.type_name : '' }
+    })
+
+    // 优先名字匹配的子分类，其次第一个子分类，最后退回顶级 id
+    let picks = preferRe ? children.filter((c) => preferRe.test(c.name)).map((c) => c.id) : []
+    if (!picks.length && children.length) picks = [children[0].id]
+    if (!picks.length) picks = [g.typeId]
+
+    writeCache(memoKey, picks, SUBCAT_MEMO_TTL)
+    return picks
+  } catch {
+    // 分类表拿不到 → 用上次记住的
+    const memo = readCache(memoKey)
+    if (memo && Array.isArray(memo.value) && memo.value.length) return memo.value
+    return null
+  }
+}
+
+/**
+ * 热门榜统一取这么多条并缓存，调用方按需截取。
+ *
+ * 为什么缓存键里不带 limit（原来带，是错的）：
+ *   首页要 6 条、底部导航的榜单页要 12 条，键写成 hot:anime:6 和 hot:anime:12
+ *   就变成两份互不复用的缓存。用户在首页看完点「动漫」，会重新拉一次
+ *   （最长 11 秒），体感很差。
+ *   改成「一个分组一份池子」，首页和榜单页共享，切换底部导航就是瞬开。
+ */
+const HOT_POOL_SIZE = 12
+
+/**
  * 热门榜单
  *
  * 取数策略全部基于实测（见 scripts/diagnose-hot.mjs）
@@ -399,10 +462,12 @@ export async function getHotList(
   group,
   { limit = 12, pages = 2, deadline = HOT_BUDGET_MS, force = false } = {}
 ) {
-  const key = `hot:${group}:${limit}`
+  const key = `hot:${group}`
+  const take = (list) => (Array.isArray(list) ? list.slice(0, limit) : [])
+
   if (!force) {
     const cached = cacheGet(key)
-    if (cached) return cached
+    if (cached) return take(cached)
   }
 
   const sources = enabledSources()
@@ -411,23 +476,8 @@ export async function getHotList(
   const { ok } = await fanOut(
     sources,
     async (src, signal) => {
-      const classes = await getClasses(src)
-      const groups = resolveGroups(classes)
-      const g = groups[group]
-      if (!g) return { items: [] }
-
-      const children = [...new Set(g.children || [])].map((id) => {
-        const c = classes.find((x) => x.type_id === id)
-        return { id, name: c ? c.type_name : '' }
-      })
-
-      // 挑子分类：优先名字匹配的，其次第一个子分类，最后退回顶级 id
-      let picks = []
-      if (preferRe) {
-        picks = children.filter((c) => preferRe.test(c.name)).map((c) => c.id)
-      }
-      if (!picks.length && children.length) picks = [children[0].id]
-      if (!picks.length) picks = [g.typeId]
+      const picks = await resolveHotPicks(src, group, preferRe)
+      if (!picks || !picks.length) return { items: [] }
 
       const items = []
       for (const tid of picks) {
@@ -451,13 +501,15 @@ export async function getHotList(
   ok.forEach((r) => all.push(...r.value.items))
 
   const merged = mergeVods(all, sources)
-  const hot = rankHot(merged, { limit })
+  // 池子按 HOT_POOL_SIZE 与 limit 的较大者取，避免调用方要得更多时拿不满
+  const pool = rankHot(merged, { limit: Math.max(HOT_POOL_SIZE, limit) })
 
   // 只有拿到内容才写缓存（预算到点可能一个源都没回来）
-  if (!hot.length) return hot
+  if (!pool.length) return []
   // 分级缓存：兜底结果只留 2 分钟，好让后台重取尽快替换
-  const ttl = isWeakHotList(hot) ? 2 * 60 * 1000 : 30 * 60 * 1000
-  return cacheSetList(key, hot, ttl)
+  const ttl = isWeakHotList(pool) ? 2 * 60 * 1000 : 30 * 60 * 1000
+  cacheSetList(key, pool, ttl)
+  return take(pool)
 }
 
 /**
@@ -646,12 +698,16 @@ export async function searchMedia({ keyword, page = 1, group } = {}) {
   }
 
   const merged = mergeVods(all, sources)
+  // 按匹配强度重排：标题连续包含关键词的排前面，字被打散的（如搜「仙逆」
+  // 命中「逆仙而上」）排后面。采集源原本的返回顺序只反映「哪个源先返回」，
+  // 和相关性无关。详见 api/rank.js 的 matchTier 说明。
+  const ranked = rankSearchResults(merged, kw)
   const result = {
     keyword: kw,
     page,
     group: group || null,
-    items: merged,
-    total: merged.length,
+    items: ranked,
+    total: ranked.length,
     rawTotal,
     hasMore: ok.some((r) => (r.value.items?.length || 0) >= 10),
     sourceStats: {
@@ -659,7 +715,7 @@ export async function searchMedia({ keyword, page = 1, group } = {}) {
       ok: ok.length,
       failed: failed.map((f) => ({ key: f.source?.key, error: f.error })),
       rawCount: all.length,
-      mergedCount: merged.length,
+      mergedCount: ranked.length,
     },
   }
   // 列表项先瘦身（详见 media.js 的 slimVod）
@@ -830,10 +886,29 @@ export async function getHomeFeed({ force = false, onRefresh } = {}) {
     if (homeInflight) return homeInflight
   }
 
-  homeInflight = buildHomeFeed({ onUpdate: onRefresh }).finally(() => {
-    homeInflight = null
-  })
+  homeInflight = buildHomeFeed({ onUpdate: onRefresh })
+    .then((feed) => {
+      // 首页出来后，后台把底部导航「动漫 / 电视剧」两个榜单页的数据备好，
+      // 用户点过去就是瞬开。
+      // 因为热门榜按「一个分组一份池子」缓存（见 HOT_POOL_SIZE），
+      // 首页自己那次取数就已经填好了池子，这里的调用多数是缓存命中、零请求。
+      // 真正起作用的情况：首页那次因预算不足只拿到兜底结果，
+      // 这里会用完整预算补齐，用户点底部导航时已经是好数据。
+      warmTabLists()
+      return feed
+    })
+    .finally(() => {
+      homeInflight = null
+    })
   return homeInflight
+}
+
+/** 后台预热底部导航两个榜单页的数据（失败无所谓，用户点过去会正常加载） */
+function warmTabLists() {
+  Promise.all([
+    getHotList('anime', { limit: HOT_POOL_SIZE }).catch(() => []),
+    getHotList('tv', { limit: HOT_POOL_SIZE }).catch(() => []),
+  ]).catch(() => null)
 }
 
 /** 真正做聚合的那一层 */
@@ -851,11 +926,10 @@ async function buildHomeFeed(
    * 热门榜用短预算先出结果：两个有热度数据的源都要 6 秒以上，
    * 若卡住不放会让首屏很难看。拿不到优质结果时下面会后台重取（见 upgradeHot）。
    */
-  const [hotAnime, hotTv, latestMovie, categories] = await Promise.all([
+  const [hotAnime, hotTv, latestMovie] = await Promise.all([
     getHotList('anime', { limit: 6, deadline: hotDeadline, force: forceHot }).catch(() => []),
     getHotList('tv', { limit: 6, deadline: hotDeadline, force: forceHot }).catch(() => []),
     getLatest('movie', { limit: 8, deadline: HOME_BUDGET_MS }).catch(() => []),
-    getNavCategories({ deadline: HOME_BUDGET_MS }).catch(() => []),
   ])
 
   const anime = hotAnime
@@ -866,7 +940,9 @@ async function buildHomeFeed(
   const hero =
     pool.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0] || pool[0] || null
 
-  const feed = { hero, hotAnime: anime, hotTv: tv, latestMovie: movie, categories }
+  // 不再返回 categories：首页的分类快捷入口已移除，没有其他视图在用，
+  // 保留只会白白多跑一次「全源分类表聚合」。
+  const feed = { hero, hotAnime: anime, hotTv: tv, latestMovie: movie }
 
   // 只有拿到内容才写缓存：预算到点时可能一个源都没回来，
   // 这时写空数据会把「没内容」固化数分钟，下次打开还是空的。

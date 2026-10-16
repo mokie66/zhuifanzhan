@@ -24,7 +24,7 @@ globalThis.fetch = (input, init) => {
 // 浏览器专有 API 的最小垫片（模块里有 typeof window 保护，但保险起见）
 globalThis.window = globalThis.window || undefined
 
-const { getHomeFeed, getCategoryList, searchMedia, getDetail, guessGroup } =
+const { getHomeFeed, getCategoryList, searchMedia, getDetail, guessGroup, getHotList } =
   await import('@/api/index.js')
 const { resolvePlayUrl, pickPlayable } = await import('@/utils/media.js')
 
@@ -49,13 +49,6 @@ try {
   log(anime.length > 0, '热门国漫区块', `${anime.length} 部`)
   log(tv.length > 0, '热门电视剧区块', `${tv.length} 部`)
   log((feed.latestMovie || []).length >= 0, '电影区块', `${(feed.latestMovie || []).length} 部`)
-  log((feed.categories || []).length > 0, '导航分类', (feed.categories || []).map((c) => c.label).join('/'))
-
-  // 热门榜的核心诉求：拿到的应该是有播放量数据的作品，而不是兜底排序
-  const animeWithHits = anime.filter((v) => Number(v.hits) > 0).length
-  const tvWithHits = tv.filter((v) => Number(v.hits) > 0).length
-  log(animeWithHits > 0, '热门国漫带播放量数据', `${animeWithHits}/${anime.length} 部`)
-  log(tvWithHits > 0, '热门电视剧带播放量数据', `${tvWithHits}/${tv.length} 部`)
 
   if (anime[0]) {
     const v = anime[0]
@@ -67,6 +60,19 @@ try {
   }
 } catch (e) {
   log(false, '首页聚合失败', e.message)
+}
+
+// 热门榜的「内容质量」单独验证，不用首页那次的结果：
+// 首页用的是首屏预算，拿不到热度数据时会先返回兜底结果并后台补齐
+// （见 index.js 的 upgradeHotInBackground），所以首页结果带有时机不确定性。
+// 这里用完整预算直接取，断言才稳定。
+try {
+  const hot = await getHotList('anime', { limit: 12 })
+  const withHits = hot.filter((v) => Number(v.hits) > 0).length
+  log(withHits > 0, '热门榜按播放量排序（完整预算）', `${withHits}/${hot.length} 部带播放量`)
+  if (hot[0]) console.log(`   热门榜首: 《${hot[0].title}》 播放量=${hot[0].hits}`)
+} catch (e) {
+  log(false, '热门榜取数失败', e.message)
 }
 
 console.log('\n' + '='.repeat(90))

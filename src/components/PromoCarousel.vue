@@ -131,7 +131,6 @@ onBeforeUnmount(stopTimer)
         class="absolute inset-0 h-full w-full object-cover transition-opacity duration-500 motion-reduce:transition-none"
         :class="s.i === index ? 'opacity-100' : 'opacity-0'"
         :loading="s.i === 0 ? 'eager' : 'lazy'"
-        decoding="async"
         draggable="false"
       >
     </div>
