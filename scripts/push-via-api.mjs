@@ -60,10 +60,23 @@ if (!token) {
 }
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const git = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8' }).trim()
+
+/**
+ * git 调用统一带上 core.quotepath=false
+ *
+ * 不加这个的话，git 会对非 ASCII 路径加引号并转义成八进制字面量：
+ *   "docs/\345\256\236\347\216\260\350\257\264\346\230\216.md"
+ * 这种路径拿去 `git cat-file blob <sha>:<path>` 是找不到文件的
+ * （实测踩过：中文文件名推送直接失败，纯 ASCII 的文件名则一直正常）。
+ */
+const GIT_FLAGS = ['-c', 'core.quotepath=false', '-c', 'i18n.logOutputEncoding=utf-8']
+
+const git = (...a) => execFileSync('git', [...GIT_FLAGS, ...a], { cwd: root, encoding: 'utf8' }).trim()
 /** 不裁剪输出：提交信息、文件内容必须逐字节保留，否则 SHA 会不同 */
-const gitRaw = (...a) => execFileSync('git', a, { cwd: root, encoding: 'utf8' })
-const gitBuf = (...a) => execFileSync('git', a, { cwd: root, maxBuffer: 256 * 1024 * 1024 })
+const gitRaw = (...a) =>
+  execFileSync('git', [...GIT_FLAGS, ...a], { cwd: root, encoding: 'utf8' })
+const gitBuf = (...a) =>
+  execFileSync('git', [...GIT_FLAGS, ...a], { cwd: root, maxBuffer: 512 * 1024 * 1024 })
 
 /**
  * 精确读取提交对象
