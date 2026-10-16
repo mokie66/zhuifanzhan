@@ -177,11 +177,14 @@ try {
         git remote add origin $cleanUrl
     }
 
-    # 推送时临时用带 token 的地址：不写进任何配置文件
+    # 推送时临时用带 token 的地址，但**不能带 --set-upstream**：
+    # --set-upstream 会把「带 token 的 URL」写进 branch.<name>.remote，
+    # 只重置 origin 是清不掉的（实际踩过一次，见下方清理段）。
+    # 正确顺序：先普通推送 → 再用干净的 origin 单独设上游。
     $prevEA = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & git push $authUrl "$branch`:$branch" --set-upstream 2>&1 |
+        & git push $authUrl "$branch`:$branch" 2>&1 |
             ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         $pushExit = $LASTEXITCODE
     } finally {
@@ -192,12 +195,26 @@ try {
         Write-Err "推送失败（退出码 $pushExit）"
         Write-Host ''
         Write-Host '  常见原因：' -ForegroundColor Yellow
-        Write-Host '    - Token 缺 repo 权限' -ForegroundColor Gray
+        Write-Host '    - Token 缺 Contents 写权限（fine-grained 需设为 Read and write）' -ForegroundColor Gray
+        Write-Host '    - Token 的「仓库访问范围」未包含该仓库' -ForegroundColor Gray
         Write-Host '    - Token 已过期' -ForegroundColor Gray
-        Write-Host '    - 网络问题（部分网络环境需代理访问 github.com）' -ForegroundColor Gray
+        Write-Host '    - 网络问题（部分网络环境下 git 协议会被重置）' -ForegroundColor Gray
+        Write-Host ''
+        Write-Host '  排查提示：GitHub 响应头 x-accepted-github-permissions' -ForegroundColor Gray
+        Write-Host '  会直接写明缺少哪项权限，比错误文本准确得多。' -ForegroundColor Gray
         exit 1
     }
     Write-Ok '推送完成'
+
+    # 用干净的 origin 单独设置上游
+    $prevEA2 = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & git branch --set-upstream-to=origin/$branch $branch 2>&1 |
+            ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    } finally {
+        $ErrorActionPreference = $prevEA2
+    }
 
     # =======================================================================
     # 5. 清理与校验（关键：确认 token 没留在配置里）
@@ -205,18 +222,26 @@ try {
     Write-Step '校验凭据未残留'
 
     git remote set-url origin $cleanUrl
+    # branch.<name>.remote 同样可能被写成带 token 的 URL，强制指回干净 origin
+    git config "branch.$branch.remote" origin
+    git config "branch.$branch.merge" "refs/heads/$branch"
 
     $cfg = Get-Content '.git/config' -Raw
     if ($cfg -match [regex]::Escape($Token)) {
-        Write-Err '.git/config 中发现 token，正在清理'
+        Write-Err '.git/config 中发现 token，强制清理'
         git remote set-url origin $cleanUrl
-        Write-Warn2 '已重置 remote，请确认 .git/config 内容'
-    } else {
-        Write-Ok '.git/config 中无 token 残留'
+        git config "branch.$branch.remote" origin
+        $cfg = Get-Content '.git/config' -Raw
+        if ($cfg -match [regex]::Escape($Token)) {
+            Write-Err '清理后仍存在，请手动检查 .git/config'
+            exit 1
+        }
     }
+    Write-Ok '.git/config 中无 token 残留'
 
     $remoteUrl = (git remote get-url origin).Trim()
     Write-Ok "origin = $remoteUrl"
+    Write-Ok "branch.$branch.remote = $(git config "branch.$branch.remote")"
 
     # 工作区的 .git 之外也不该有残留
     $leaked = Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue |
