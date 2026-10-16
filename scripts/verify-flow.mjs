@@ -42,15 +42,28 @@ let feed
 try {
   feed = await getHomeFeed()
   log(Boolean(feed.hero), '有主视觉影片', feed.hero ? `《${feed.hero.title}》` : '')
-  log(feed.latestTv.length > 0, '电视剧区块', `${feed.latestTv.length} 部`)
-  log(feed.latestAnime.length > 0, '动漫区块', `${feed.latestAnime.length} 部`)
-  log(feed.latestMovie.length >= 0, '电影区块', `${feed.latestMovie.length} 部`)
-  log(feed.categories.length > 0, '导航分类', feed.categories.map((c) => c.label).join('/'))
-  if (feed.latestTv[0]) {
-    const v = feed.latestTv[0]
-    console.log(
-      `   样片: 《${v.title}》 源=${v.sourceName} 分类=${v.categoryName} 集数=${v.episodeCount} 线路=${v.playableLines?.length || 0} 可播=${v.playable}`
-    )
+
+  // 首页的动漫/电视节目已改为「热门榜」（按播放量排序），字段名也相应改为 hot*
+  const anime = feed.hotAnime || []
+  const tv = feed.hotTv || []
+  log(anime.length > 0, '热门国漫区块', `${anime.length} 部`)
+  log(tv.length > 0, '热门电视剧区块', `${tv.length} 部`)
+  log((feed.latestMovie || []).length >= 0, '电影区块', `${(feed.latestMovie || []).length} 部`)
+  log((feed.categories || []).length > 0, '导航分类', (feed.categories || []).map((c) => c.label).join('/'))
+
+  // 热门榜的核心诉求：拿到的应该是有播放量数据的作品，而不是兜底排序
+  const animeWithHits = anime.filter((v) => Number(v.hits) > 0).length
+  const tvWithHits = tv.filter((v) => Number(v.hits) > 0).length
+  log(animeWithHits > 0, '热门国漫带播放量数据', `${animeWithHits}/${anime.length} 部`)
+  log(tvWithHits > 0, '热门电视剧带播放量数据', `${tvWithHits}/${tv.length} 部`)
+
+  if (anime[0]) {
+    const v = anime[0]
+    console.log(`   国漫榜首: 《${v.title}》 源=${v.sourceName} 播放量=${v.hits} 评分=${v.score}`)
+  }
+  if (tv[0]) {
+    const v = tv[0]
+    console.log(`   剧集榜首: 《${v.title}》 源=${v.sourceName} 播放量=${v.hits} 评分=${v.score}`)
   }
 } catch (e) {
   log(false, '首页聚合失败', e.message)

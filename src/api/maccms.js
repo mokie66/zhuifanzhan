@@ -36,6 +36,7 @@ import {
   REQUEST_TIMEOUT,
 } from './transport.js'
 import { enabledSources, getSource, getActiveSources } from './config.js'
+import { readCache, writeCache } from './cache.js'
 
 /**
  * 分类表请求的独立超时
@@ -111,6 +112,8 @@ export async function getClasses(source, { force = false } = {}) {
   const src = typeof source === 'string' ? getSource(source) : source
   if (!src) return []
 
+  const persistKey = `classes:${src.key}`
+
   if (!force) {
     const cached = classCache.get(src.key)
     if (cached && Date.now() - cached.at < CLASS_CACHE_TTL) {
@@ -119,20 +122,29 @@ export async function getClasses(source, { force = false } = {}) {
     // 并发去重：已有同源请求在跑就直接复用
     const inflight = classInflight.get(src.key)
     if (inflight) return inflight
+    // 内存没有 → 查落盘（跨 App 启动保留）
+    const stored = readCache(persistKey)
+    if (stored && !stored.stale && Array.isArray(stored.value) && stored.value.length) {
+      classCache.set(src.key, { at: Date.now(), data: stored.value })
+      return stored.value
+    }
   }
 
   const task = (async () => {
     try {
-      // 这里显式传超时：不传就会用 transport 的默认值（20 秒），
-      // 而分类表请求由多个调用方共享，一个源卡 20 秒会连累整个首屏。
+      // 这里显式传超时：不传就会用 transport 的默认值（12 秒），
+      // 而分类表请求由多个调用方共享，一个源卡住会连累整个首屏。
       const { data } = await request(src, { ac: 'list' }, { timeout: CLASS_TIMEOUT })
       const classes = (data.class || []).map((c) => ({
         type_id: Number(c.type_id),
         type_pid: Number(c.type_pid || 0),
         type_name: String(c.type_name || '').trim(),
       }))
-      // 空结果不缓存，保留重试机会（有的源偶发返回空表）
-      if (classes.length) classCache.set(src.key, { at: Date.now(), data: classes })
+      // 空结果不缓存，保留重试机会（有的源偶发返回空表或 HTML 错误页）
+      if (classes.length) {
+        classCache.set(src.key, { at: Date.now(), data: classes })
+        writeCache(persistKey, classes, CLASS_CACHE_TTL)
+      }
       return classes
     } finally {
       classInflight.delete(src.key)

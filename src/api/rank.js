@@ -188,6 +188,67 @@ export function rankVods(vods, { limit = Infinity, now = Date.now(), perSource =
 }
 
 /**
+ * 热门榜单排序
+ * ==============
+ * 与 rankVods 的区别（两者用途不同，不要混用）
+ * --------------------------------------------
+ * rankVods（「最新」场景）：
+ *   目的是「多源都有曝光」—— 各源内部排序后交错取数。
+ *   但交错会强制每个源都出几条，把没有热度数据、只有批量动态漫的源也塞进来。
+ *   用在「最新更新」列表上没问题，用在「爆火榜单」上就是错的。
+ *
+ * rankHot（本函数，「热门」场景）：
+ *   目的是「只留真正热的」—— 不做无差别交错。
+ *
+ * 为什么按「源内排名」而不是原始 hits 直接比较
+ * ------------------------------------------
+ * 各源 hits 量级完全不同（实测同一天：魔都《遮天》126159，爱奇艺《无可替代》6599），
+ * 直接跨源比较会让魔都一家霸榜，其实只是两家统计口径不同，不代表真实热度差 19 倍。
+ * 所以先在各源内部按 hits 排名，再按「名次」交错 —— 相当于比较
+ * 「在各自平台上的热门程度」，这样既公平又能避免单源垄断。
+ *
+ * 没有 hits 的源会被排除在热门榜之外（它们的 hits 恒为 0，无法参与热度排序），
+ * 只在数量不够时用评分/时效兜底补位。
+ */
+export function rankHot(vods, { limit = 12, now = Date.now() } = {}) {
+  if (!Array.isArray(vods) || !vods.length) return []
+
+  const groups = new Map()
+  vods.forEach((v) => {
+    const k = v.sourceKey || '__unknown'
+    if (!groups.has(k)) groups.set(k, [])
+    groups.get(k).push(v)
+  })
+
+  // 每个源内部按 hits 排序；同时判断该源是否「有热度数据」
+  const rankedBySource = []
+  for (const [key, list] of groups.entries()) {
+    const withHits = list.filter((v) => (Number(v.hits) || 0) > 0)
+    if (!withHits.length) continue // 无热度数据 → 不参与热门榜
+    withHits.sort((a, b) => (Number(b.hits) || 0) - (Number(a.hits) || 0))
+    rankedBySource.push([key, withHits])
+  }
+
+  // 无任何源提供热度数据 → 退化为按评分/时效排序，至少不是随机的
+  if (!rankedBySource.length) {
+    return [...vods]
+      .sort((a, b) => popularityScore(b, now) - popularityScore(a, now))
+      .slice(0, limit)
+  }
+
+  // 先按名次交错，保证多个有热度数据的源都能出现（避免单源垄断）
+  const out = []
+  const maxLen = Math.max(...rankedBySource.map(([, l]) => l.length))
+  for (let rank = 0; rank < maxLen && out.length < limit; rank++) {
+    for (const [, list] of rankedBySource) {
+      if (rank < list.length && out.length < limit) out.push(list[rank])
+    }
+  }
+
+  return out.slice(0, limit)
+}
+
+/**
  * 打分：用于跨源合并时挑主记录
  *
  * 与 media.js 的 scoreVod 配合：那边按「线路多、集数全、字段完整」评估，

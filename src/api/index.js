@@ -29,7 +29,7 @@ import {
   matchGroup,
 } from './taxonomy.js'
 import { normalizeVodList, mergeVods, normalizeTitle, slimVodList } from '@/utils/media.js'
-import { rankVods } from './rank.js'
+import { rankVods, rankHot } from './rank.js'
 
 /* ------------------------------------------------------------------ *
  * 缓存（内存 + localStorage 两级，跨 App 启动保留）
@@ -45,7 +45,16 @@ import {
   clearMemory as clearMemoryCache,
   cacheStats,
 } from './cache.js'
-import { checkAvailable, recordSuccess, recordFailure, healthSnapshot } from './health.js'
+import {
+  checkAvailable,
+  recordSuccess,
+  recordFailure,
+  healthSnapshot,
+  HEALTH_TUNING,
+} from './health.js'
+
+/** 默认的「慢请求」判定阈值（各调用方可按自己的预算覆盖） */
+const SLOW_MS_DEFAULT = HEALTH_TUNING.SLOW_MS
 
 /**
  * 读缓存：只认「新鲜」的，过期即视为未命中。
@@ -175,7 +184,12 @@ function settleWithin(promises, budgetMs) {
 async function fanOut(
   sources,
   task,
-  { timeout = PER_SOURCE_TIMEOUT, skipUnhealthy = true, deadline = 0 } = {}
+  {
+    timeout = PER_SOURCE_TIMEOUT,
+    skipUnhealthy = true,
+    deadline = 0,
+    slowMs = SLOW_MS_DEFAULT,
+  } = {}
 ) {
   const usable = []
   const skipped = []
@@ -200,7 +214,7 @@ async function fanOut(
     const t0 = Date.now()
     return task(src, ctrl.signal)
       .then((value) => {
-        recordSuccess(src.key, Date.now() - t0)
+        recordSuccess(src.key, Date.now() - t0, slowMs)
         return { ok: true, source: src, value }
       })
       .catch((err) => {
@@ -336,6 +350,114 @@ async function fetchLatestByGroup(src, group, want, signal, sourceIndex = 0) {
   })
 
   return { items: unique.slice(0, want), pageCount: 1 }
+}
+
+/**
+ * 热门榜专用预算。
+ *
+ * 比首屏预算长：实测两个「有热度数据」的源都很慢 ——
+ *   魔都   分类表 3445ms + 数据 2756ms ≈ 6.2s
+ *   爱奇艺 分类表  861ms + 数据 5646ms ≈ 6.5s
+ * 用 6s 预算会刚好错过，热门榜拿不到 hits 数据就退化成兜底排序了。
+ * 热门榜只用于专门的榜单页（用户在等内容），且缓存 30 分钟，等得起。
+ */
+const HOT_BUDGET_MS = 11000
+
+/**
+ * 判定热门榜结果是否「不够好」：一条带播放量的都没有
+ * 说明有热度数据的源没赶上预算，此时应后台用更长预算重取。
+ */
+function isWeakHotList(list) {
+  return !Array.isArray(list) || !list.some((v) => (Number(v.hits) || 0) > 0)
+}
+
+/**
+ * 热门榜单
+ *
+ * 取数策略全部基于实测（见 scripts/diagnose-hot.mjs）
+ * ---------------------------------------------------
+ * 1. 只用「有热度数据」的源参与排序。实测 vod_hits 填充率：
+ *      魔都 40/40、爱奇艺 40/40、量子 0/40、非凡 0/40、电影天堂 2/40
+ *    没有 hits 的源无法参与热度排序，硬排进来只会把批量动态漫带到榜首。
+ *    rankHot 内部会剔除它们。
+ * 2. 优先取「国产动漫 / 国产剧」这类子分类。爆款高度集中在这里，
+ *    实测按 hits 排序捞出来的正是《遮天》《沧元图》《大主宰》这类真正的热门作品。
+ * 3. 取 2 页扩大候选池 —— 只取一页的话热门作品可能刚好压在下一页。
+ * 4. 缓存分级：拿到真实热度数据的缓存 30 分钟（热门变化慢）；
+ *    只有兜底结果的只缓存 2 分钟，让后台重取能尽快替换掉它。
+ * ------------------------------------------------------------------ */
+
+/** 各分组下优先选取的子分类名（用于匹配 type_name） */
+const HOT_PREFERRED_SUB = {
+  anime: '国产动漫|国产动画|国漫',
+  tv: '国产剧|大陆剧|内地剧',
+  movie: '国产|大陆',
+  variety: '大陆|内地|国产',
+}
+
+export async function getHotList(
+  group,
+  { limit = 12, pages = 2, deadline = HOT_BUDGET_MS, force = false } = {}
+) {
+  const key = `hot:${group}:${limit}`
+  if (!force) {
+    const cached = cacheGet(key)
+    if (cached) return cached
+  }
+
+  const sources = enabledSources()
+  const preferRe = HOT_PREFERRED_SUB[group] ? new RegExp(HOT_PREFERRED_SUB[group]) : null
+
+  const { ok } = await fanOut(
+    sources,
+    async (src, signal) => {
+      const classes = await getClasses(src)
+      const groups = resolveGroups(classes)
+      const g = groups[group]
+      if (!g) return { items: [] }
+
+      const children = [...new Set(g.children || [])].map((id) => {
+        const c = classes.find((x) => x.type_id === id)
+        return { id, name: c ? c.type_name : '' }
+      })
+
+      // 挑子分类：优先名字匹配的，其次第一个子分类，最后退回顶级 id
+      let picks = []
+      if (preferRe) {
+        picks = children.filter((c) => preferRe.test(c.name)).map((c) => c.id)
+      }
+      if (!picks.length && children.length) picks = [children[0].id]
+      if (!picks.length) picks = [g.typeId]
+
+      const items = []
+      for (const tid of picks) {
+        for (let pg = 1; pg <= pages; pg++) {
+          try {
+            const res = await rawList(src, { page: pg, typeId: tid }, { signal })
+            items.push(...normalizeVodList(res.list, src))
+          } catch {
+            /* 单页失败不影响其他 */
+          }
+        }
+      }
+      return { items }
+    },
+    // slowMs 传热门榜预算：这些源本来就慢（魔都/爱奇艺 6 秒以上），
+    // 按默认 6 秒判定会把它们记成「慢」进而熔断，等于把自己要用的源封了。
+    { deadline, slowMs: deadline || HOT_BUDGET_MS }
+  )
+
+  const all = []
+  ok.forEach((r) => all.push(...r.value.items))
+
+  const merged = mergeVods(all, sources)
+  const hot = rankHot(merged, { limit })
+
+  // 只有拿到内容才写缓存（预算到点可能一个源都没回来）
+  if (!hot.length) return hot
+  // 分级缓存：兜底结果只留 2 分钟，好让后台重取尽快替换
+  const ttl = isWeakHotList(hot) ? 2 * 60 * 1000 : 30 * 60 * 1000
+  return cacheSetList(key, hot, ttl)
 }
 
 /**
@@ -708,50 +830,92 @@ export async function getHomeFeed({ force = false, onRefresh } = {}) {
     if (homeInflight) return homeInflight
   }
 
-  homeInflight = buildHomeFeed().finally(() => {
+  homeInflight = buildHomeFeed({ onUpdate: onRefresh }).finally(() => {
     homeInflight = null
   })
   return homeInflight
 }
 
 /** 真正做聚合的那一层 */
-async function buildHomeFeed() {
-  const [latest, categories] = await Promise.all([
-    getLatestMulti(['tv', 'anime', 'movie'], {
-      limit: 8,
-      deadline: HOME_BUDGET_MS,
-    }).catch(() => ({})),
+async function buildHomeFeed(
+  { onUpdate, hotDeadline = HOME_BUDGET_MS, forceHot = false } = {}
+) {
+  /**
+   * 首页内容策略
+   * ------------
+   * 动漫 / 电视剧用「热门榜」（getHotList）而不是「最新」。
+   * 原因：按更新时间取回来的全是刚入库的批量动态漫，观感差、也没人想看；
+   * 热门榜按播放量排序，捞出来的是《遮天》《沧元图》《大主宰》这类真正的爆款。
+   * 电影暂时仍用「最新」（用户只提了动漫和电视剧）。
+   *
+   * 热门榜用短预算先出结果：两个有热度数据的源都要 6 秒以上，
+   * 若卡住不放会让首屏很难看。拿不到优质结果时下面会后台重取（见 upgradeHot）。
+   */
+  const [hotAnime, hotTv, latestMovie, categories] = await Promise.all([
+    getHotList('anime', { limit: 6, deadline: hotDeadline, force: forceHot }).catch(() => []),
+    getHotList('tv', { limit: 6, deadline: hotDeadline, force: forceHot }).catch(() => []),
+    getLatest('movie', { limit: 8, deadline: HOME_BUDGET_MS }).catch(() => []),
     getNavCategories({ deadline: HOME_BUDGET_MS }).catch(() => []),
   ])
 
-  const tv = latest.tv || []
-  const anime = latest.anime || []
-  const movie = latest.movie || []
+  const anime = hotAnime
+  const tv = hotTv
+  const movie = latestMovie
 
   const pool = [...tv, ...movie, ...anime].filter((v) => v.poster)
   const hero =
     pool.slice().sort((a, b) => (b.score || 0) - (a.score || 0))[0] || pool[0] || null
 
-  const feed = { hero, latestTv: tv, latestAnime: anime, latestMovie: movie, categories }
+  const feed = { hero, hotAnime: anime, hotTv: tv, latestMovie: movie, categories }
 
   // 只有拿到内容才写缓存：预算到点时可能一个源都没回来，
   // 这时写空数据会把「没内容」固化数分钟，下次打开还是空的。
   const hasContent = tv.length || anime.length || movie.length
   if (hasContent) {
-    // 三个分区都先瘦身：这四项播放线路数据占体积 99.4%，
+    // 各分区都先瘦身：播放线路数据占体积 99.4%，
     // 不瘦身会让 localStorage 记录达到 MB 级（实测 1.7MB），
     // 既逼近配额上限，序列化本身也要几百毫秒。
     const slim = {
       ...feed,
-      latestTv: slimVodList(tv),
-      latestAnime: slimVodList(anime),
+      hotAnime: slimVodList(anime),
+      hotTv: slimVodList(tv),
       latestMovie: slimVodList(movie),
       hero: hero ? slimVodList([hero])[0] : null,
     }
     cacheSet('home:feed', slim, HOME_TTL)
   }
 
+  // 热门榜质量不足（没拿到任何播放量数据）→ 后台用更长预算重取一次。
+  // 只在首次（非 force）路径触发，避免 force 调用再套一层造成循环。
+  if (!forceHot && (isWeakHotList(anime) || isWeakHotList(tv))) {
+    upgradeHotInBackground(onUpdate)
+  }
+
   return feed
+}
+
+/** 热门榜后台升级中标记（同时只跑一份） */
+let hotUpgrading = false
+
+/**
+ * 后台用长预算重取热门榜，成功后把新数据推给界面。
+ *
+ * 为什么需要：
+ *   魔都 / 爱奇艺都要 6 秒以上才返回带播放量的数据，而首屏预算只有 7 秒，
+ *   首屏常常等不到它们，只能退化排序（结果是刚入库的批量新番）。
+ *   这里先用退化结果把界面填上（用户不用干等），再在后台静静换成真正的热门榜。
+ */
+function upgradeHotInBackground(onUpdate) {
+  if (hotUpgrading) return
+  hotUpgrading = true
+  buildHomeFeed({ hotDeadline: HOT_BUDGET_MS, forceHot: true })
+    .then((fresh) => {
+      if (fresh && typeof onUpdate === 'function') onUpdate(fresh)
+    })
+    .catch(() => null)
+    .finally(() => {
+      hotUpgrading = false
+    })
 }
 
 /** 后台刷新首页（不阻塞调用方） */

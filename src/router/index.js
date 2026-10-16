@@ -18,16 +18,23 @@ const routes = [
     meta: { title: '首页', tabBar: true, navKey: 'home' },
   },
   {
+    /**
+     * 底部导航的「电视剧」：展示当前最热的 12 部，不做翻页浏览
+     * （想看更多走搜索，页面底部有引导入口）
+     */
     path: '/tv',
     name: 'tv-library',
-    component: () => import('@/views/BrowseView.vue'),
-    meta: { title: '电视剧', tabBar: true, navKey: 'tv', group: 'tv' },
+    component: () => import('@/views/HotListView.vue'),
+    props: { group: 'tv', limit: 12 },
+    meta: { title: '热门电视剧', tabBar: true, navKey: 'tv', group: 'tv' },
   },
   {
+    /** 底部导航的「动漫」：同上，按播放量排序的热门国漫 */
     path: '/anime',
     name: 'anime-library',
-    component: () => import('@/views/BrowseView.vue'),
-    meta: { title: '动漫', tabBar: true, navKey: 'anime', group: 'anime' },
+    component: () => import('@/views/HotListView.vue'),
+    props: { group: 'anime', limit: 12 },
+    meta: { title: '热门国漫', tabBar: true, navKey: 'anime', group: 'anime' },
   },
   {
     path: '/movie',

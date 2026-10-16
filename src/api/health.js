@@ -84,13 +84,19 @@ export function checkAvailable(key) {
   }
 }
 
-/** 记录一次成功 */
-export function recordSuccess(key, ms) {
+/** 记录一次成功
+ *
+ * slowThreshold 用于判断「慢」：调用方按自己的预算传。
+ * 这点很重要 —— 热门榜的预算本来就是 11 秒（因为魔都/爱奇艺都要 6 秒以上），
+ * 若统一按 6 秒判定，每次拉热门榜都会把这两个源记成「慢」，
+ * 攒够次数就被熔断，等于把自己要用的源给封了（实际踩过）。
+ */
+export function recordSuccess(key, ms, slowThreshold = SLOW_MS) {
   const e = entry(key)
   e.ok++
   e.lastMs = ms
   e.fails = 0
-  if (ms > SLOW_MS) {
+  if (ms > slowThreshold) {
     e.slows++
     // 连续慢也算一种不健康，达到阈值同样熔断
     if (e.slows >= SLOW_THRESHOLD) e.openedAt = nowMs()

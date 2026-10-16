@@ -30,13 +30,19 @@ const CACHE_VERSION = 1
 /** 过期后仍可作为「旧数据」返回的倍数：ttl*8 */
 export const STALE_FACTOR = 8
 
-/** localStorage 配额有限（约 5MB），只持久化小体积、高价值的键 */
+/**
+ * localStorage 配额有限（约 5MB），只持久化小体积、高价值的键
+ *
+ * classes:* 尤其值得持久化：源站分类表几乎不变，但冷启动时它要挡住
+ * 后续所有数据请求（必须先拿到分类表才能按子分类取数）。实测最慢的源
+ * 光分类表就要 3.4 秒。持久化后冷启动可直接命中，省掉这段等待。
+ */
 const PERSIST_KEYS = [
   'home:feed',
   'nav:categories',
-  'latest:tv',
-  'latest:anime',
-  'latest:movie',
+  'hot:',
+  'latest:',
+  'classes:',
 ]
 
 const memory = new Map()

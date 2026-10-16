@@ -38,14 +38,34 @@ const showSourcePanel = ref(false)
 
 onMounted(async () => {
   history.value = (await getHistory()).slice(0, 6)
-  // 源健康检查较慢，放到后台不阻塞首屏
-  checkSourcesHealth()
-    .then((r) => (sourcesHealth.value = r))
-    .catch(() => (sourcesHealth.value = []))
 })
 
-const latestTv = computed(() => feed.data.value?.latestTv || [])
-const latestAnime = computed(() => feed.data.value?.latestAnime || [])
+/**
+ * 源健康探测改为懒加载
+ *
+ * 原来在 onMounted 里就跑 checkSourcesHealth()，但结果只用于「源状态」折叠面板，
+ * 用户不展开就永远看不到。而它会给全部源各发一个请求（7 个并发），
+ * 恰好和首屏的热门榜请求挤在一起，实测会让采集源更难在预算内返回，
+ * 热门榜因此拿不到热度数据而退化成「刚入库的新番」。
+ * 所以改成首次展开时才探测。
+ */
+const healthLoading = ref(false)
+
+async function toggleSourcePanel() {
+  showSourcePanel.value = !showSourcePanel.value
+  if (!showSourcePanel.value || sourcesHealth.value.length || healthLoading.value) return
+  healthLoading.value = true
+  try {
+    sourcesHealth.value = await checkSourcesHealth()
+  } catch {
+    sourcesHealth.value = []
+  } finally {
+    healthLoading.value = false
+  }
+}
+
+const hotAnime = computed(() => feed.data.value?.hotAnime || [])
+const hotTv = computed(() => feed.data.value?.hotTv || [])
 const latestMovie = computed(() => feed.data.value?.latestMovie || [])
 const categories = computed(() => feed.data.value?.categories || [])
 
@@ -150,17 +170,17 @@ const CATEGORY_ICONS = {
         </div>
       </section>
 
-      <!-- 最近更新 · 动漫（放在电视剧之前） -->
-      <section v-if="latestAnime.length">
+      <!-- 热门国漫（放在电视剧之前） -->
+      <section v-if="hotAnime.length">
         <div class="mb-3 flex items-center justify-between">
-          <h2 class="text-h2 text-foreground">最近更新 · 动漫</h2>
+          <h2 class="text-h2 text-foreground">热门国漫</h2>
           <router-link to="/anime" class="flex items-center text-caption text-primary">
             查看全部<ChevronRight class="h-3.5 w-3.5" />
           </router-link>
         </div>
         <div class="grid grid-cols-2 gap-3">
           <button
-            v-for="item in latestAnime"
+            v-for="item in hotAnime"
             :key="`${item.sourceKey}-${item.id}`"
             type="button"
             class="block text-left transition-transform active:scale-[0.98]"
@@ -171,17 +191,17 @@ const CATEGORY_ICONS = {
         </div>
       </section>
 
-      <!-- 最近更新 · 电视剧 -->
-      <section v-if="latestTv.length">
+      <!-- 热门电视剧 -->
+      <section v-if="hotTv.length">
         <div class="mb-3 flex items-center justify-between">
-          <h2 class="text-h2 text-foreground">最近更新 · 电视剧</h2>
+          <h2 class="text-h2 text-foreground">热门电视剧</h2>
           <router-link to="/tv" class="flex items-center text-caption text-primary">
             查看全部<ChevronRight class="h-3.5 w-3.5" />
           </router-link>
         </div>
         <div class="grid grid-cols-2 gap-3">
           <button
-            v-for="item in latestTv"
+            v-for="item in hotTv"
             :key="`${item.sourceKey}-${item.id}`"
             type="button"
             class="block text-left transition-transform active:scale-[0.98]"
@@ -235,14 +255,13 @@ const CATEGORY_ICONS = {
         <button
           type="button"
           class="flex w-full items-center justify-between"
-          @click="showSourcePanel = !showSourcePanel"
+          @click="toggleSourcePanel"
         >
           <span class="text-[13px] font-medium text-foreground">资源源状态</span>
           <span class="text-[11px] tabular-nums text-muted-foreground">
-            <template v-if="sourcesHealth.length">
-              {{ okSourceCount }}/{{ allSourceCount }} 可用
-            </template>
-            <template v-else>检测中…</template>
+            <template v-if="healthLoading">检测中…</template>
+            <template v-else-if="sourcesHealth.length">{{ okSourceCount }}/{{ allSourceCount }} 可用</template>
+            <template v-else>点击检测</template>
           </span>
         </button>
         <div v-if="showSourcePanel" class="mt-2 space-y-1.5">

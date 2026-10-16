@@ -87,19 +87,22 @@ src/
 │   ├── AppHeader.vue    顶部栏
 │   └── BottomTabNav.vue 底部导航
 ├── views/
-│   ├── HomeView.vue        首页（聚合最新电视剧/动漫/电影）
-│   ├── BrowseView.vue      通用分类浏览（/tv /anime /movie /variety 共用）
+│   ├── HomeView.vue        首页（推广图轮播 + 热门国漫 6 + 热门电视剧 6 + 电影）
+│   ├── HotListView.vue     热门榜单页（/tv /anime：12 部热门 + 搜索引导）
+│   ├── BrowseView.vue      通用分类浏览（/movie /variety /browse/:group 用）
 │   ├── SearchView.vue      多源聚合搜索
 │   ├── DetailView.vue      详情 + 选集 + 换源
 │   ├── PlayerView.vue      播放 + 线路切换 + 进度记忆
 │   ├── MyLibraryView.vue   收藏 / 观看历史
 │   ├── SettingsView.vue    资源源设置（远程更新 / 手动导入 / 复检）
-│   ├── TvLibraryView.vue   ⚠ 已被 BrowseView 取代，仅保留薄封装
+│   ├── TvLibraryView.vue   ⚠ 已被 HotListView 取代，文件保留但无引用
 │   └── AnimeLibraryView.vue ⚠ 同上
 ├── router/index.js      路由（详情与播放页带参数，可分享可刷新）
 ├── styles/theme.css     设计令牌与全局样式
 ├── App.vue / main.js    应用外壳
-└── assets/              ⚠ 早期设计稿图片，已无代码引用，可删
+└── assets/
+    ├── banners/         首页推广图（promo-{1..4}-*.webp，2092x1169）
+    └── *.jpg            ⚠ 早期设计稿图片，已无代码引用，可删
 
 scripts/
 ├── _android-env.ps1     [共享] JDK/SDK 探测（被下面两个 ps1 引用）
@@ -284,6 +287,43 @@ vod_play_url  = "第01集$url#第02集$url$$$第01集$url"
 `health.js` 的 `HEALTH_TUNING`。
 
 改完用 `npm run diagnose:home` 复测（先跑一次冷启动，再跑一次看是否秒开）。
+
+### 7. 热门榜只能靠部分源，且必须「不交错」
+
+首页的「热门国漫 / 热门电视剧」和底部导航的 `/anime` `/tv` 走 `getHotList()`，
+按播放量（`vod_hits`）排序。取数有几个硬约束（实测见 `scripts/diagnose-hot.mjs`）：
+
+```
+vod_hits 填充率：魔都 40/40、爱奇艺 40/40、量子 0/40、非凡 0/40、电影天堂 2/40
+接口排序参数   ：by / order / sort 全部无效，返回同一批数据
+```
+
+由此得到三条必须遵守的规则：
+
+1. **只用有热度数据的源参与排序**（`rankHot` 会自动剔除 hits 恒为 0 的源）。
+   把没有播放量的源硬排进来，只会把批量动态漫顶到榜首。
+2. **不能按「源内先排序再交错」之外的任何方式混排原始 hits**。
+   各源量级差太多（实测同一天：魔都《遮天》126159，爱奇艺《无可替代》6599），
+   直接跨源比大小会让魔都一家霸榜。`rankHot` 的做法是「源内按 hits 排名 →
+   按名次交错」，等价于比较「在各自平台上的热门程度」。
+   ⚠ 注意这和 `rankVods`（最新场景）的交错目的**完全不同**，别混用。
+3. **子分类要挑准**。爆款高度集中在「国产动漫 / 国产剧」，
+   泛取整个动漫分组会把刚入库的批量新番带进来。见 `HOT_PREFERRED_SUB`。
+
+**两个容易踩的坑**（都实际踩过）：
+
+- 热门榜预算必须比首屏预算长。实测两个有热度数据的源都要 6 秒以上
+  （魔都 分类表 3445ms + 数据 2756ms；爱奇艺 861ms + 5646ms），
+  用首屏的 7 秒预算会刚好错过，热门榜就退化成兜底排序了。
+  所以有独立的 `HOT_BUDGET_MS`，且首页在质量不足时会后台用长预算重取
+  （`upgradeHotInBackground`），拿到好数据再通过 `onRefresh` 推给界面。
+- `recordSuccess` 的「慢」判定要传对应预算（`slowMs`）。热门榜预算本来就是
+  11 秒，若统一按 6 秒判定，每次拉热门榜都会把魔都/爱奇艺记成「慢」，
+  攒够次数被熔断 —— 等于把自己要用的源给封了。
+
+**还有一处容易忽略的启动开销**：`checkSourcesHealth()` 原来在首页 `onMounted`
+里就跑，但结果只用于折叠面板，用户不展开就看不到。它会额外发 7 个并发请求，
+和首屏热门榜挤在一起，实测会让采集源更难在预算内返回。现已改成首次展开时才探测。
 
 ---
 
